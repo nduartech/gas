@@ -18,7 +18,7 @@ This plugin transforms JSX in `.jsx` and `.tsx` files into optimized SolidJS DOM
 ## Installation
 
 ```bash
-bun add gas
+bun add @nathanld/gas
 ```
 
 ## Usage
@@ -36,7 +36,7 @@ Create a preload file to enable the plugin at runtime:
 
 ```typescript
 // preload.ts
-import { preload } from "gas";
+import { preload } from "@nathanld/gas";
 
 preload({
   generate: "dom"
@@ -55,7 +55,7 @@ Use the plugin with `Bun.build()`:
 
 ```typescript
 // build.ts
-import gasPlugin from "gas";
+import gasPlugin from "@nathanld/gas";
 
 await Bun.build({
   entrypoints: ["./src/index.tsx"],
@@ -70,12 +70,12 @@ When using Bun's HTML dev server or static-site bundler, configure gas as a bund
 
 ```toml
 [serve.static]
-plugins = ["gas/bun-plugin"]
+plugins = ["@nathanld/gas/bun-plugin"]
 
 preload = ["./preload.ts"] # optional; enables runtime plugin for non-HTML usage
 ```
 
-- `gas/bun-plugin` is a ready-to-use bundler plugin instance for DOM output.
+- `@nathanld/gas/bun-plugin` is a ready-to-use bundler plugin instance for DOM output.
 - For custom options, prefer wiring `gasPlugin(...)` directly via `Bun.build()` as shown above.
 
 ### SSR Mode
@@ -83,7 +83,7 @@ preload = ["./preload.ts"] # optional; enables runtime plugin for non-HTML usage
 Server-side rendering is available via `generate: "ssr"`. Set `hydratable: true` to emit hydration keys.
 
 ```typescript
-import { gasPlugin } from "gas";
+import { gasPlugin } from "@nathanld/gas";
 
 await Bun.build({
   entrypoints: ["./src/server.tsx"],
@@ -290,7 +290,7 @@ const App = () =>
 Creates a Bun plugin instance.
 
 ```typescript
-import { gasPlugin } from "gas";
+import { gasPlugin } from "@nathanld/gas";
 
 const plugin = gasPlugin({
   generate: "dom",
@@ -303,7 +303,7 @@ const plugin = gasPlugin({
 Convenience function for preload scripts.
 
 ```typescript
-import { preload } from "gas";
+import { preload } from "@nathanld/gas";
 
 preload({ generate: "dom" });
 ```
@@ -313,7 +313,7 @@ preload({ generate: "dom" });
 Low-level API to transform JSX source code.
 
 ```typescript
-import { transformJSX } from "gas";
+import { transformJSX } from "@nathanld/gas";
 
 const result = transformJSX(sourceCode, resolvedOptions);
 ```
@@ -323,7 +323,7 @@ const result = transformJSX(sourceCode, resolvedOptions);
 Check if source code contains JSX.
 
 ```typescript
-import { hasJSX } from "gas";
+import { hasJSX } from "@nathanld/gas";
 
 if (hasJSX(sourceCode)) {
   // Transform the code

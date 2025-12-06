@@ -7,14 +7,14 @@
  * preload = ["./gas-preload.ts"]
  *
  * // gas-preload.ts
- * import { gasPlugin } from "gas";
+ * import { gasPlugin } from "@nathanld/gas";
  * Bun.plugin(gasPlugin());
  * ```
  *
  * @example
  * ```typescript
  * // build.ts
- * import { gasPlugin } from "gas";
+ * import { gasPlugin } from "@nathanld/gas";
  *
  * await Bun.build({
  *   entrypoints: ["./src/index.tsx"],
@@ -179,7 +179,7 @@ function validateOptions(options: {
  *
  * @example
  * ```typescript
- * import { gasPlugin } from "gas";
+ * import { gasPlugin } from "@nathanld/gas";
  *
  * // For runtime usage (preload)
  * Bun.plugin(gasPlugin());
@@ -260,7 +260,7 @@ function getLoader(path: string): "tsx" | "jsx" | "ts" | "js" {
  * @example
  * ```typescript
  * // preload.ts
- * import { preload } from "gas";
+ * import { preload } from "@nathanld/gas";
  * preload();
  *
  * // bunfig.toml
