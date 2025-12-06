@@ -1,0 +1,20 @@
+# AGENT Guidelines for gas
+- Use Bun; install deps with `bun install` at repo root.
+- Build the library with `bun run build` (includes `build:types`).
+- Run all tests with `bun test` from the project root.
+- Run a single test file with `bun test test/parser.test.ts` (adjust path as needed).
+- For the sample app: `cd test/apps/sample-app && bun install && bun run build`.
+- CI mirrors these steps: install, `bun test`, then `bun run build`.
+- No dedicated linter is configured; do not introduce new tooling without discussion.
+- Match existing formatting: 2-space indentation, semicolons, double-quoted strings.
+- Use ES modules (`import`/`export`) with named imports where possible.
+- Keep TypeScript types explicit; avoid `any` and prefer narrow, descriptive interfaces.
+- Reuse existing types from `src/types.ts` and nearby modules before adding new ones.
+- Follow existing naming: PascalCase for types/components, camelCase for variables/functions.
+- Keep functions small and focused; extract helpers in the same module before creating new files.
+- Preserve error-handling patterns: throw `Error`/custom errors with clear, actionable messages.
+- When catching errors, include contextual information (file, JSX snippet, or position) in messages.
+- Prefer pure, deterministic helpers; avoid hidden global state beyond documented caches/context.
+- Keep imports ordered: standard library/Node, third-party, then internal `./` modules.
+- Do not reformat unrelated code; keep diffs minimal and focused on the task.
+- There are currently no Cursor or Copilot rule files; if added, update this document.

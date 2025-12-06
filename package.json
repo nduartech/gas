@@ -1,0 +1,55 @@
+{
+  "name": "@nathanld/gas",
+  "version": "0.0.0.alpha",
+  "description": "A native Bun plugin for compiling SolidJS projects without Babel",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./bun-plugin": {
+      "import": "./dist/bun-plugin.js",
+      "types": "./dist/bun-plugin.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "bun build ./src/index.ts ./src/bun-plugin.ts --outdir ./dist --target bun && bun run build:types",
+    "build:types": "tsc --emitDeclarationOnly --declaration --outDir dist",
+    "test": "bun test",
+    "dev": "bun --watch src/index.ts"
+  },
+  "keywords": [
+    "bun",
+    "solid",
+    "solidjs",
+    "jsx",
+    "plugin",
+    "bundler",
+    "compiler",
+    "gas"
+  ],
+  "author": "",
+  "license": "MIT",
+  "peerDependencies": {
+    "solid-js": "^1.7.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/jsdom": "^27.0.0",
+    "jsdom": "^27.2.0",
+    "solid-js": "^1.9.3",
+    "typescript": "^5.7.2",
+    "@changesets/cli": "^2.27.8"
+  },
+  "dependencies": {
+    "@typescript/native-preview": "7.0.0-dev.20251206.1"
+  }
+}
