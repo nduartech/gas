@@ -1,5 +1,11 @@
 # @nathanld/gas
 
+## 0.0.1
+
+### Patch Changes
+
+- 0844070: Fixed bundler issues
+
 ## 0.0.0
 
 ### Patch Changes
