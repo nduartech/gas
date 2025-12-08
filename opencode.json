@@ -5,10 +5,6 @@
     "bun_docs": {
       "type": "remote",
       "url": "https://bun.com/docs/mcp"
-    },
-    "solid_docs": {
-      "type": "remote",
-      "url": "https://gitmcp.io/solidjs/solid"
     }
   }
 }

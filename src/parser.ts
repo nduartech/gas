@@ -81,6 +81,7 @@ export interface ParsedProp {
 export type ParsedPropValue =
   | { type: "string"; value: string }
   | { type: "expression"; value: string }
+  | { type: "element"; value: ParsedJSX }
   | { type: "true" } // boolean shorthand like <div disabled />
   | { type: "spread"; value: string };
 

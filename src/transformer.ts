@@ -24,6 +24,14 @@ function loadTypeScript(): typeof import("typescript") {
  * Transform source code containing JSX into SolidJS-compatible JavaScript
  */
 export function transformJSX(source: string, options: ResolvedGasOptions): string {
+  // If a specific JSX import source is required, only transform when the pragma matches
+  if (options.requireImportSource) {
+    const marker = `@jsxImportSource ${options.requireImportSource}`;
+    if (!source.includes(marker)) {
+      return source;
+    }
+  }
+
   // Find all JSX expressions in the source using TypeScript AST for accuracy
   const jsxExpressions = findJSXExpressionsAST(source);
 
@@ -103,12 +111,13 @@ export function transformJSX(source: string, options: ResolvedGasOptions): strin
   parts.push(result);
 
   // Add delegate events call at the end if needed
-  if (allDelegatedEvents.size > 0) {
+  if ((options.delegateEvents ?? true) && allDelegatedEvents.size > 0) {
     const eventsArray = Array.from(allDelegatedEvents)
       .map(e => `"${e}"`)
       .join(", ");
     parts.push(`_$delegateEvents([${eventsArray}]);`);
   }
+
 
   return parts.join("\n");
 }
@@ -142,17 +151,17 @@ function generateImportStatement(
   const importMap: Record<string, string> = {
     template: "_$template",
     insert: "_$insert",
-    effect: "_$effect",
-    memo: "_$memo",
-    createComponent: "_$createComponent",
-    delegateEvents: "_$delegateEvents",
     spread: "_$spread",
+    mergeProps: "_$mergeProps",
     classList: "_$classList",
     style: "_$style",
     use: "_$use",
-    mergeProps: "_$mergeProps",
     addEventListener: "_$addEventListener",
+    delegateEvents: "_$delegateEvents",
+    effect: "_$effect",
+    memo: "_$memo",
     escape: "_$escape",
+    createComponent: "_$createComponent",
     ssrHydrationKey: "_$ssrHydrationKey",
     ssrElement: "_$ssrElement",
     ssrClassList: "_$ssrClassList",
@@ -161,18 +170,65 @@ function generateImportStatement(
     ssrSpread: "_$ssrSpread"
   };
 
+  const orderedKeys: (keyof typeof importMap)[] = [
+    "template",
+    "insert",
+    "spread",
+    "mergeProps",
+    "classList",
+    "style",
+    "use",
+    "addEventListener",
+    "delegateEvents",
+    "effect",
+    "memo",
+    "escape",
+    "createComponent",
+    "ssrHydrationKey",
+    "ssrElement",
+    "ssrClassList",
+    "ssrStyle",
+    "ssrAttribute",
+    "ssrSpread"
+  ];
+
   const importedNames: string[] = [];
 
-  for (const imp of imports) {
-    if (importMap[imp]) {
-      importedNames.push(`${imp} as ${importMap[imp]}`);
+  for (const key of orderedKeys) {
+    if (key === "delegateEvents") {
+      // handled after loop so we can include it when delegatedEvents are present
+      continue;
+    }
+
+    if (key === "effect") {
+      if (imports.has("effect")) {
+        importedNames.push(`${options.effectWrapper} as ${importMap.effect}`);
+      }
+      continue;
+    }
+
+    if (key === "memo") {
+      if (imports.has("memo")) {
+        importedNames.push(`${options.memoWrapper} as ${importMap.memo}`);
+      }
+      continue;
+    }
+
+    if (imports.has(key)) {
+      importedNames.push(`${key} as ${importMap[key]}`);
     }
   }
 
   // Add delegateEvents if there are any delegated events
-  if (delegatedEvents.size > 0 && !imports.has("delegateEvents")) {
-    importedNames.push("delegateEvents as _$delegateEvents");
+  if (delegatedEvents.size > 0) {
+    if (!imports.has("delegateEvents")) {
+      importedNames.push("delegateEvents as _$delegateEvents");
+    } else if (!importedNames.some(name => name.includes("_$delegateEvents"))) {
+      importedNames.push(`delegateEvents as ${importMap.delegateEvents}`);
+    }
   }
+
+
 
   if (importedNames.length === 0) {
     return "";

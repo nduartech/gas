@@ -33,16 +33,70 @@ export interface GasPluginOptions {
   builtIns?: string[];
 
   /**
+   * Enable automatic event delegation for common events
+   * @default true
+   */
+  delegateEvents?: boolean;
+
+  /**
    * Wrap conditionals in memos for fine-grained reactivity
    * @default true
    */
   wrapConditionals?: boolean;
 
   /**
+   * Optimize template HTML by omitting nested closing tags when safe
+   * @default false
+   */
+  omitNestedClosingTags?: boolean;
+
+  /**
+   * Optimize template HTML by omitting the last closing tag when safe
+   * @default true
+   */
+  omitLastClosingTag?: boolean;
+
+  /**
+   * Optimize template HTML by omitting quotes around attributes when safe
+   * @default true
+   */
+  omitQuotes?: boolean;
+
+  /**
+   * Restrict JSX transformation to files with a matching @jsxImportSource pragma
+   * @default false
+   */
+  requireImportSource?: string | false;
+
+  /**
    * Convert context to custom elements
    * @default true
    */
   contextToCustomElements?: boolean;
+
+  /**
+   * Comment marker used to indicate static expressions (for example "@once")
+   * @default "@once"
+   */
+  staticMarker?: string;
+
+  /**
+   * Name of the reactive effect function used for wrapping dynamic expressions
+   * @default "effect"
+   */
+  effectWrapper?: string;
+
+  /**
+   * Name of the memo function used for conditional expressions
+   * @default "memo"
+   */
+  memoWrapper?: string;
+
+  /**
+   * Enable HTML structure validation for JSX output
+   * @default true
+   */
+  validate?: boolean;
 
   /**
    * Enable development mode with additional debugging info
@@ -57,6 +111,7 @@ export interface GasPluginOptions {
   filter?: RegExp;
 }
 
+
 /**
  * Resolved plugin options with defaults applied
  */
@@ -66,8 +121,17 @@ export interface ResolvedGasOptions {
   moduleName: string;
   runtime?: "dom" | "ssr" | "universal";
   builtIns: Set<string>;
+  delegateEvents: boolean;
   wrapConditionals: boolean;
+  omitNestedClosingTags: boolean;
+  omitLastClosingTag: boolean;
+  omitQuotes: boolean;
+  requireImportSource: string | false;
   contextToCustomElements: boolean;
+  staticMarker: string;
+  effectWrapper: string;
+  memoWrapper: string;
+  validate: boolean;
   dev: boolean;
   filter: RegExp;
 }

@@ -4,6 +4,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { findJSXExpressions, parseJSX, JSXParseError } from "../src/parser.js";
+import { findJSXExpressionsAST } from "../src/ast.js";
 
 describe("findJSXExpressions", () => {
   test("finds simple JSX element", () => {
@@ -91,6 +92,15 @@ describe("findJSXExpressions", () => {
 
     expect(results.length).toBe(1);
     expect(results[0]!.jsx).toBe("<Foo.Bar.Baz />");
+  });
+
+  test("AST finder skips nested JSX inside expressions", () => {
+    const source = `function Comp() { return (<div><For each={items}>{(item) => { const Icon = item.Icon; return (<button class={item.cls}><Icon /></button>); }}</For></div>); }`;
+    const results = findJSXExpressionsAST(source);
+
+    expect(results.length).toBe(1);
+    expect(results[0]!.jsx).toContain("<div>");
+    expect(results[0]!.jsx).toContain("<button");
   });
 });
 

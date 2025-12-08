@@ -130,8 +130,17 @@ function resolveOptions(options: GasPluginOptions = {}): ResolvedGasOptions {
     moduleName,
     runtime,
     builtIns: new Set(options.builtIns ?? DEFAULT_BUILTINS),
+    delegateEvents: options.delegateEvents ?? true,
     wrapConditionals: options.wrapConditionals ?? true,
+    omitNestedClosingTags: options.omitNestedClosingTags ?? false,
+    omitLastClosingTag: options.omitLastClosingTag ?? true,
+    omitQuotes: options.omitQuotes ?? true,
+    requireImportSource: options.requireImportSource ?? false,
     contextToCustomElements: options.contextToCustomElements ?? true,
+    staticMarker: options.staticMarker ?? "@once",
+    effectWrapper: options.effectWrapper ?? "effect",
+    memoWrapper: options.memoWrapper ?? "memo",
+    validate: options.validate ?? true,
     dev: options.dev ?? false,
     filter: options.filter ?? /\.[tj]sx$/
   } satisfies ResolvedGasOptions;
@@ -235,14 +244,20 @@ export function gasPlugin(options: GasPluginOptions = {}): BunPlugin {
             const line = lines.length;
             const column = lines[lines.length - 1]!.length + 1;
             locationInfo = ` at line ${line}, column ${column}`;
+ 
+            const codeFrameLine = source.split("\n")[line - 1] ?? "";
+            const caret = `${" ".repeat(Math.max(0, column - 1))}^`;
+            const framedMessage = `${message}\n${codeFrameLine}\n${caret}`;
+            throw new Error(`Gas transformation failed for ${args.path}${locationInfo}: ${framedMessage}`);
           }
-
+ 
           throw new Error(`Gas transformation failed for ${args.path}${locationInfo}: ${message}`);
         }
       });
     }
   };
 }
+
 
 /**
  * Determine the appropriate loader based on file extension

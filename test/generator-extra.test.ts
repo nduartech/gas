@@ -20,11 +20,21 @@ const domOptions: ResolvedGasOptions = {
     "Dynamic",
     "ErrorBoundary"
   ]),
+  delegateEvents: true,
   wrapConditionals: true,
+  omitNestedClosingTags: false,
+  omitLastClosingTag: true,
+  omitQuotes: true,
+  requireImportSource: false,
   contextToCustomElements: true,
+  staticMarker: "@once",
+  effectWrapper: "effect",
+  memoWrapper: "memo",
+  validate: true,
   dev: false,
   filter: /\.[tj]sx$/
 };
+
 
 const ssrOptions: ResolvedGasOptions = {
   generate: "ssr",
@@ -43,8 +53,17 @@ const ssrOptions: ResolvedGasOptions = {
     "Dynamic",
     "ErrorBoundary"
   ]),
+  delegateEvents: true,
   wrapConditionals: true,
+  omitNestedClosingTags: false,
+  omitLastClosingTag: true,
+  omitQuotes: true,
+  requireImportSource: false,
   contextToCustomElements: true,
+  staticMarker: "@once",
+  effectWrapper: "effect",
+  memoWrapper: "memo",
+  validate: true,
   dev: false,
   filter: /\.[tj]sx$/
 };
@@ -53,11 +72,26 @@ describe("generateSolidCode (DOM)", () => {
   test("emits template for fully static element", () => {
     const jsx = parseJSX(`<div class="a">Hello</div>`);
     const result = generateSolidCode(jsx, domOptions);
-
+ 
     expect(result.imports.has("template")).toBe(true);
     expect(result.templates.length).toBeGreaterThan(0);
     expect(result.code).toContain("_tmpl$");
   });
+
+  test("uses _tmpl$ and _tmpl$2 naming for multiple templates", () => {
+    const jsx = parseJSX(`<>
+      <div>First</div>
+      <span>Second</span>
+    </>`);
+
+    const result = generateSolidCode(jsx, domOptions);
+
+    const joinedTemplates = result.templates.join("\n");
+    expect(joinedTemplates).toContain("const _tmpl$ =");
+    expect(joinedTemplates).toContain("const _tmpl$2 =");
+    expect(joinedTemplates).not.toContain("_tmpl$0");
+  });
+
 
   test("handles dynamic props, events, spreads, refs, and expressions", () => {
     const jsx = parseJSX(
@@ -101,5 +135,16 @@ describe("generateSolidCode (SSR)", () => {
     expect(result.code).toContain("ssrClassList");
     expect(result.code).toContain("ssrStyle");
     expect(result.code).toContain("data-id");
+  });
+
+  test("lowercases SSR boolean attributes from camelCase JSX", () => {
+    const jsx = parseJSX(`<video autoFocus playsInline muted={muted} />`);
+
+    const result = generateSolidCode(jsx, ssrOptions);
+
+    expect(result.imports.has("ssrAttribute")).toBe(true);
+    expect(result.code).toContain('"autofocus": _$ssrAttribute("autofocus", true)');
+    expect(result.code).toContain('"playsinline": _$ssrAttribute("playsinline", true)');
+    expect(result.code).toContain('"muted": _$ssrAttribute("muted", muted)');
   });
 });

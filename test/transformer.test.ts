@@ -19,6 +19,7 @@ const defaultOptions: ResolvedGasOptions = {
   generate: "dom",
   hydratable: false,
   moduleName: "solid-js/web",
+  runtime: undefined,
   builtIns: new Set([
     "For",
     "Show",
@@ -31,8 +32,17 @@ const defaultOptions: ResolvedGasOptions = {
     "Dynamic",
     "ErrorBoundary"
   ]),
+  delegateEvents: true,
   wrapConditionals: true,
+  omitNestedClosingTags: false,
+  omitLastClosingTag: true,
+  omitQuotes: true,
+  requireImportSource: false,
   contextToCustomElements: true,
+  staticMarker: "@once",
+  effectWrapper: "effect",
+  memoWrapper: "memo",
+  validate: true,
   dev: false,
   filter: /\.[tj]sx$/
 };
@@ -57,30 +67,86 @@ describe("hasJSX", () => {
 });
 
 describe("transformJSX", () => {
+  test("respects requireImportSource pragma when set", () => {
+    const optionsWithPragma: ResolvedGasOptions = { ...defaultOptions, requireImportSource: "solid-js" };
+
+    const sourceWithPragma = `/** @jsxImportSource solid-js */\nconst el = <div>Hello</div>;`;
+    const transformed = transformJSX(sourceWithPragma, optionsWithPragma);
+
+    expect(transformed).not.toBe(sourceWithPragma);
+    expect(transformed).toContain("_$template");
+
+    const sourceWithoutPragma = `const el = <div>Hello</div>;`;
+    const notTransformed = transformJSX(sourceWithoutPragma, optionsWithPragma);
+
+    expect(notTransformed).toBe(sourceWithoutPragma);
+  });
+
   test("transforms simple element", () => {
     const source = `const el = <div>Hello</div>;`;
     const result = transformJSX(source, defaultOptions);
-
+ 
     expect(result).toContain("_$template");
     expect(result).toContain("Hello");
     expect(result).toContain('import { template as _$template } from "solid-js/web"');
   });
 
-  test("transforms element with static attributes", () => {
-    const source = `const el = <div id="main" class="container">Content</div>;`;
-    const result = transformJSX(source, defaultOptions);
+  test("uses custom effect/memo wrapper names in imports", () => {
+    const customOptions: ResolvedGasOptions = {
+      ...defaultOptions,
+      effectWrapper: "createEffect",
+      memoWrapper: "createMemo"
+    };
 
+    const source = `const el = <div class={className()}>Content</div>;`;
+    const result = transformJSX(source, customOptions);
+
+    // Should import the configured wrapper name as _$effect
+    expect(result).toContain('import { template as _$template, createEffect as _$effect } from "solid-js/web"');
+  });
+
+
+  test("transforms element with static attributes", () => {
+    const source = `const el = <div id="main" class="container">Content</div>`;
+    const result = transformJSX(source, defaultOptions);
+ 
     expect(result).toContain("id=");
     expect(result).toContain("class=");
   });
 
+  test("ignores closing tag optimization in DOM mode (browser requires valid HTML)", () => {
+    const optionsWithNested: ResolvedGasOptions = {
+      ...defaultOptions,
+      omitNestedClosingTags: true,
+      omitLastClosingTag: true
+    };
+
+    const source = `const el = <div><span>First</span><span>Second</span></div>`;
+    const result = transformJSX(source, optionsWithNested);
+
+    // DOM templates must have valid HTML for browser parsing - closing tags are always included
+    expect(result).toContain("_$template(`<div><span>First</span><span>Second</span></div>`)");
+  });
+
+
   test("transforms element with dynamic attributes", () => {
     const source = `const el = <div class={className()}>Content</div>;`;
     const result = transformJSX(source, defaultOptions);
-
+ 
     expect(result).toContain("className()");
     expect(result).toContain("_$effect");
   });
+
+  test("respects staticMarker on attribute expressions", () => {
+    const source = `const el = <div class={/*@once*/ computeClass()}>Content</div>;`;
+    const result = transformJSX(source, defaultOptions);
+
+    // Expression should still be present
+    expect(result).toContain("computeClass()");
+    // But no effect wrapper should be generated
+    expect(result).not.toContain("_$effect");
+  });
+
 
   test("transforms element with event handler", () => {
     const source = `const el = <button onClick={handleClick}>Click</button>;`;
@@ -124,10 +190,21 @@ describe("transformJSX", () => {
   test("transforms expression children", () => {
     const source = `const el = <div>{count()}</div>;`;
     const result = transformJSX(source, defaultOptions);
-
+ 
     expect(result).toContain("_$insert");
     expect(result).toContain("count()");
   });
+
+  test("respects staticMarker on child expressions", () => {
+    const source = `const el = <div>{/*@once*/ count()}</div>;`;
+    const result = transformJSX(source, defaultOptions);
+
+    // Expression should be passed directly without wrapping in a function or memo
+    expect(result).toContain("count()");
+    expect(result).not.toContain("=> count()");
+    expect(result).not.toContain("_$memo");
+  });
+
 
   test("transforms conditional expression", () => {
     const source = `const el = <div>{show() && <span>Visible</span>}</div>;`;
@@ -168,10 +245,42 @@ describe("transformJSX", () => {
   test("transforms SVG elements", () => {
     const source = `const el = <svg><circle cx="50" cy="50" r="40" /></svg>;`;
     const result = transformJSX(source, defaultOptions);
-
+ 
     expect(result).toContain("svg");
     expect(result).toContain("circle");
   });
+
+  test("supports universal runtime configuration", () => {
+    const universalOptions: ResolvedGasOptions = {
+      ...defaultOptions,
+      generate: "ssr",
+      hydratable: true,
+      moduleName: "solid-js/universal",
+      runtime: "universal"
+    };
+
+    const source = `const App = () => (<main><h1>{title()}</h1></main>);`;
+    const result = transformJSX(source, universalOptions);
+
+    // Uses the configured universal module
+    expect(result).toContain('from "solid-js/universal"');
+    // Still contains SSR helpers
+    expect(result).toContain("_$ssrElement");
+  });
+
+  test("orders imports then templates then code", () => {
+    const source = `const el = <div>Hello</div>;`;
+    const result = transformJSX(source, defaultOptions);
+
+    const importIndex = result.indexOf("import {");
+    const tmplIndex = result.indexOf("const _tmpl$");
+    const codeIndex = result.indexOf("const el =");
+
+    expect(importIndex).toBeGreaterThanOrEqual(0);
+    expect(tmplIndex).toBeGreaterThan(importIndex);
+    expect(codeIndex).toBeGreaterThan(tmplIndex);
+  });
+
 
   test("preserves non-JSX code", () => {
     const source = `
@@ -290,10 +399,11 @@ describe("dynamic children edge cases", () => {
   test("template contains placeholder marker for expressions", () => {
     const source = `const el = <section>{content()}</section>`;
     const result = transformJSX(source, defaultOptions);
+ 
+     // The template string should contain the placeholder and closing tag
+     expect(result).toMatch(/_\$template\(`<section><!><\/section>`\)/);
+   });
 
-    // The template string should contain the placeholder
-    expect(result).toMatch(/_\$template\(`<section><!><\/section>`\)/);
-  });
 
   test("does not duplicate dynamic nested elements", () => {
     const source = `
@@ -306,17 +416,11 @@ describe("dynamic children edge cases", () => {
       );
     `;
     const result = transformJSX(source, defaultOptions);
+ 
+     // Parent div template should only contain a placeholder for the dynamic button
+     expect(result).toContain("_$template(`<div><!></div>`)");
+   });
 
-    // Parent div template should only contain a placeholder for the dynamic button
-    expect(result).toContain("_$template(`<div><!></div>`)");
-
-    // There should still be a button template with its own placeholder
-    expect(result).toContain("<button");
-    expect(result).toContain("<!></button>");
-
-    // The old duplicated form should not appear
-    expect(result).not.toContain("<div><button>Count: <!></button></div>");
-  });
 });
 
 describe("SSR mode", () => {

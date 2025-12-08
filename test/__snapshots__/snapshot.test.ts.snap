@@ -1,0 +1,25 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`transform snapshots dom static and dynamic 1`] = `
+"import { template as _$template, insert as _$insert, effect as _$effect, delegateEvents as _$delegateEvents } from "solid-js/web";
+const _tmpl$ = /*#__PURE__*/_$template(\`<div>Hi <!></div>\`);
+const view = (() => {
+  const _el$0 = _tmpl$();
+  const _el$1 = _el$0.firstChild.nextSibling;
+  _$effect(() => _el$0.className = cls());
+  _el$0.$$click = handle;
+  _$insert(_el$1.parentNode, name, _el$1);
+  return _el$0;
+})();
+_$delegateEvents(["click"]);"
+`;
+
+exports[`transform snapshots ssr with hydration 1`] = `
+"import { escape as _$escape, ssrHydrationKey as _$ssrHydrationKey, ssrElement as _$ssrElement } from "solid-js/web";
+const view = _$ssrElement("main", { "data-hk": _$ssrHydrationKey() }, _$ssrElement("h1", { "title": title(), "data-hk": _$ssrHydrationKey() }, "Hello", true) + For({ "each": items(), get children() { return _$escape(item => _$ssrElement("span", { "data-hk": _$ssrHydrationKey() }, _$escape(item), true)); } }), true);"
+`;
+
+exports[`transform snapshots universal basic 1`] = `
+"import { ssrHydrationKey as _$ssrHydrationKey, ssrElement as _$ssrElement } from "solid-js/universal";
+const view = _$ssrElement("section", { "data-hk": _$ssrHydrationKey() }, _$ssrElement("button", { "onClick": click, "data-hk": _$ssrHydrationKey() }, "Go", true), true);"
+`;

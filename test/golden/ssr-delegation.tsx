@@ -18,8 +18,17 @@ const options: ResolvedGasOptions = {
   moduleName: "solid-js/ssr",
   runtime: "ssr",
   builtIns: new Set(["For","Show","Switch","Match","Suspense","SuspenseList","Portal","Index","Dynamic","ErrorBoundary"]),
+  delegateEvents: true,
   wrapConditionals: true,
+  omitNestedClosingTags: false,
+  omitLastClosingTag: true,
+  omitQuotes: true,
+  requireImportSource: false,
   contextToCustomElements: true,
+  staticMarker: "@once",
+  effectWrapper: "effect",
+  memoWrapper: "memo",
+  validate: true,
   dev: false,
   filter: /\.[tj]sx$/
 };

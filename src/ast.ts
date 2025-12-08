@@ -40,30 +40,25 @@ export interface JSXExpressionSpan {
 export function findJSXExpressionsAST(source: string, fileName = "source.tsx"): JSXExpressionSpan[] {
   const sf = createSourceFileSafe(source, fileName);
   const spans: JSXExpressionSpan[] = [];
- 
-  const visit = (node: Node, parent: Node | undefined) => {
+
+  const visit = (node: Node, insideJSX: boolean) => {
     const isJsxNode =
       ts.isJsxElement(node) || ts.isJsxSelfClosingElement(node) || ts.isJsxFragment(node);
- 
+
     if (isJsxNode) {
-      const parentIsJsx =
-        parent &&
-        (ts.isJsxElement(parent) ||
-          ts.isJsxSelfClosingElement(parent) ||
-          ts.isJsxFragment(parent));
- 
-      // Only record top-level JSX roots, not nested elements
-      if (!parentIsJsx) {
+      if (!insideJSX) {
         const start = node.getStart(sf, false);
         const end = node.getEnd();
         spans.push({ start, end, jsx: source.slice(start, end) });
       }
+      // Do not traverse into JSX children; they are covered by the parent span
+      return;
     }
- 
-    node.forEachChild(child => visit(child, node));
+
+    node.forEachChild(child => visit(child, insideJSX || isJsxNode));
   };
- 
-  visit(sf, undefined);
+
+  visit(sf, false);
   return spans;
 }
 
@@ -125,7 +120,20 @@ export function convertJSXFromAST(node: Node, sf: SourceFile): ParsedJSX {
     };
   }
 
-  throw new Error("Unsupported JSX node");
+  const kindName = ts.SyntaxKind[node.kind] ?? "Unknown";
+  throw new Error(`Unsupported JSX node: ${kindName}`);
+}
+
+function unwrapJSXExpression(expr: import("typescript").Expression): import("typescript").Expression | null {
+  let current: import("typescript").Expression | undefined = expr;
+  while (current && ts.isParenthesizedExpression(current)) {
+    current = current.expression;
+  }
+  if (!current) return null;
+  if (ts.isJsxElement(current) || ts.isJsxSelfClosingElement(current) || ts.isJsxFragment(current)) {
+    return current;
+  }
+  return null;
 }
 
 function convertJSXChild(child: JsxChild, sf: SourceFile): ParsedChild | null {
@@ -136,7 +144,20 @@ function convertJSXChild(child: JsxChild, sf: SourceFile): ParsedChild | null {
   }
   if (ts.isJsxExpression(child)) {
     if (!child.expression) return null;
-    const exprText = child.expression.getText(sf);
+
+    const jsxExpr = unwrapJSXExpression(child.expression);
+    if (jsxExpr) {
+      return { type: "element", value: convertJSXFromAST(jsxExpr, sf) };
+    }
+
+    // Prefer the raw text inside braces so we preserve inline comments like static markers
+    const raw = child.getText(sf);
+    let exprText: string;
+    if (raw.startsWith("{") && raw.endsWith("}")) {
+      exprText = raw.slice(1, -1).trim();
+    } else {
+      exprText = child.expression.getText(sf);
+    }
     return { type: "expression", value: exprText, start: child.getStart(sf), end: child.getEnd() };
   }
   if (ts.isJsxSelfClosingElement(child) || ts.isJsxFragment(child) || ts.isJsxElement(child)) {
@@ -178,7 +199,25 @@ function convertProps(attrs: JsxAttributes, sf: SourceFile): ParsedProp[] {
       }
 
       if (ts.isJsxExpression(attr.initializer) && attr.initializer.expression) {
-        const exprText = attr.initializer.expression.getText(sf);
+        const jsxExpr = unwrapJSXExpression(attr.initializer.expression);
+        if (jsxExpr) {
+          props.push({
+            name,
+            value: { type: "element", value: convertJSXFromAST(jsxExpr, sf) },
+            start: attr.getStart(sf),
+            end: attr.getEnd()
+          });
+          continue;
+        }
+
+        // Preserve comments inside the attribute expression braces
+        const raw = attr.initializer.getText(sf);
+        let exprText: string;
+        if (raw.startsWith("{") && raw.endsWith("}")) {
+          exprText = raw.slice(1, -1).trim();
+        } else {
+          exprText = attr.initializer.expression.getText(sf);
+        }
         props.push({
           name,
           value: { type: "expression", value: exprText },
