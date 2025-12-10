@@ -82,6 +82,34 @@ describe("transformJSX", () => {
     expect(notTransformed).toBe(sourceWithoutPragma);
   });
 
+  test("handles various @jsxImportSource comment formats", () => {
+    const optionsWithPragma: ResolvedGasOptions = { ...defaultOptions, requireImportSource: "solid-js" };
+
+    // Test double-asterisk block comment
+    const source1 = `/** @jsxImportSource solid-js */\nconst el = <div>Hello</div>;`;
+    expect(transformJSX(source1, optionsWithPragma)).toContain("_$template");
+
+    // Test single-asterisk block comment
+    const source2 = `/* @jsxImportSource solid-js */\nconst el = <div>Hello</div>;`;
+    expect(transformJSX(source2, optionsWithPragma)).toContain("_$template");
+
+    // Test line comment
+    const source3 = `// @jsxImportSource solid-js\nconst el = <div>Hello</div>;`;
+    expect(transformJSX(source3, optionsWithPragma)).toContain("_$template");
+
+    // Test with extra whitespace
+    const source4 = `/*  @jsxImportSource   solid-js  */\nconst el = <div>Hello</div>;`;
+    expect(transformJSX(source4, optionsWithPragma)).toContain("_$template");
+
+    // Test pragma not at start of file
+    const source5 = `// Some other comment\n/** @jsxImportSource solid-js */\nconst el = <div>Hello</div>;`;
+    expect(transformJSX(source5, optionsWithPragma)).toContain("_$template");
+
+    // Test wrong import source - should NOT transform
+    const source6 = `/** @jsxImportSource react */\nconst el = <div>Hello</div>;`;
+    expect(transformJSX(source6, optionsWithPragma)).toBe(source6);
+  });
+
   test("transforms simple element", () => {
     const source = `const el = <div>Hello</div>;`;
     const result = transformJSX(source, defaultOptions);
@@ -112,6 +140,33 @@ describe("transformJSX", () => {
  
     expect(result).toContain("id=");
     expect(result).toContain("class=");
+  });
+
+  test("omitQuotes removes quotes from safe attribute values", () => {
+    // Default options have omitQuotes: true
+    const source = `const el = <div class="simple">Content</div>`;
+    const result = transformJSX(source, defaultOptions);
+    
+    // Should omit quotes for simple values
+    expect(result).toContain("class=simple");
+    expect(result).not.toContain('class="simple"');
+  });
+
+  test("omitQuotes keeps quotes for values with special characters", () => {
+    const source = `const el = <div class="has space">Content</div>`;
+    const result = transformJSX(source, defaultOptions);
+    
+    // Should keep quotes for values with spaces
+    expect(result).toContain('class="has space"');
+  });
+
+  test("omitQuotes: false keeps all quotes", () => {
+    const optionsWithQuotes: ResolvedGasOptions = { ...defaultOptions, omitQuotes: false };
+    const source = `const el = <div class="simple">Content</div>`;
+    const result = transformJSX(source, optionsWithQuotes);
+    
+    // Should keep quotes when omitQuotes is false
+    expect(result).toContain('class="simple"');
   });
 
   test("ignores closing tag optimization in DOM mode (browser requires valid HTML)", () => {
@@ -187,6 +242,80 @@ describe("transformJSX", () => {
     expect(result).not.toContain("_$createComponent(For");
   });
 
+  test("transforms Show built-in with fallback", () => {
+    const source = `const el = <Show when={visible()} fallback={<p>Loading</p>}><div>Content</div></Show>;`;
+    const result = transformJSX(source, defaultOptions);
+
+    expect(result).toContain("Show(");
+    expect(result).toContain("visible()");
+    expect(result).toContain("fallback");
+    expect(result).not.toContain("_$createComponent(Show");
+  });
+
+  test("transforms Switch/Match built-ins", () => {
+    const source = `const el = <Switch><Match when={a()}>A</Match><Match when={b()}>B</Match></Switch>;`;
+    const result = transformJSX(source, defaultOptions);
+
+    expect(result).toContain("Switch(");
+    expect(result).toContain("Match(");
+    expect(result).not.toContain("_$createComponent(Switch");
+    expect(result).not.toContain("_$createComponent(Match");
+  });
+
+  test("built-in components work in SSR mode", () => {
+    const ssrOptions: ResolvedGasOptions = { ...defaultOptions, generate: "ssr", hydratable: false };
+    const source = `const el = <For each={items()}>{item => <span>{item}</span>}</For>;`;
+    const result = transformJSX(source, ssrOptions);
+
+    // In SSR mode, built-ins are also called directly
+    expect(result).toContain("For(");
+    expect(result).not.toContain("_$createComponent(For");
+  });
+
+
+  test("nested built-in components work correctly", () => {
+    const source = `
+      const el = (
+        <Show when={visible()}>
+          <For each={items()}>
+            {item => <div>{item.name}</div>}
+          </For>
+        </Show>
+      );
+    `;
+    const result = transformJSX(source, defaultOptions);
+
+    // Both built-ins should be called directly
+    expect(result).toContain("Show(");
+    expect(result).toContain("For(");
+    expect(result).not.toContain("_$createComponent(Show");
+    expect(result).not.toContain("_$createComponent(For");
+  });
+
+  test("built-in inside custom component works correctly", () => {
+    const source = `
+      const el = (
+        <MyComponent>
+          <For each={items()}>{item => <span>{item}</span>}</For>
+        </MyComponent>
+      );
+    `;
+    const result = transformJSX(source, defaultOptions);
+
+    // MyComponent should use createComponent, For should be called directly
+    expect(result).toContain("_$createComponent(MyComponent");
+    expect(result).toContain("For(");
+    expect(result).not.toContain("_$createComponent(For");
+  });
+
+  test("built-in with member expression prop works correctly", () => {
+    const source = `const el = <Show when={props.visible}><div>Content</div></Show>;`;
+    const result = transformJSX(source, defaultOptions);
+
+    expect(result).toContain("Show(");
+    expect(result).toContain("props.visible");
+  });
+
   test("transforms expression children", () => {
     const source = `const el = <div>{count()}</div>;`;
     const result = transformJSX(source, defaultOptions);
@@ -205,6 +334,25 @@ describe("transformJSX", () => {
     expect(result).not.toContain("_$memo");
   });
 
+  test("respects staticMarker with whitespace variations", () => {
+    // Test various whitespace formats
+    const source1 = `const el = <div>{/* @once */ count()}</div>;`;
+    const result1 = transformJSX(source1, defaultOptions);
+    expect(result1).toContain("count()");
+    expect(result1).not.toContain("=> count()");
+
+    const source2 = `const el = <div>{/*  @once  */ count()}</div>;`;
+    const result2 = transformJSX(source2, defaultOptions);
+    expect(result2).toContain("count()");
+    expect(result2).not.toContain("=> count()");
+
+    // Attribute context with whitespace
+    const source3 = `const el = <div class={/* @once */ computeClass()}>Content</div>;`;
+    const result3 = transformJSX(source3, defaultOptions);
+    expect(result3).toContain("computeClass()");
+    expect(result3).not.toContain("_$effect");
+  });
+
 
   test("transforms conditional expression", () => {
     const source = `const el = <div>{show() && <span>Visible</span>}</div>;`;
@@ -218,6 +366,25 @@ describe("transformJSX", () => {
     const result = transformJSX(source, defaultOptions);
 
     expect(result).toContain("_$spread");
+  });
+
+  test("transforms multiple spread props with mergeProps", () => {
+    const source = `const el = <Comp {...a} {...b} />;`;
+    const result = transformJSX(source, defaultOptions);
+
+    expect(result).toContain("_$mergeProps");
+    expect(result).toContain("a");
+    expect(result).toContain("b");
+  });
+
+  test("merges spread with regular props in components", () => {
+    const source = `const el = <Comp {...props} foo="bar" baz={qux()} />;`;
+    const result = transformJSX(source, defaultOptions);
+
+    expect(result).toContain("_$mergeProps");
+    expect(result).toContain("props");
+    expect(result).toContain('"foo": "bar"');
+    expect(result).toContain("qux()");
   });
 
   test("transforms classList", () => {
@@ -250,6 +417,37 @@ describe("transformJSX", () => {
     expect(result).toContain("circle");
   });
 
+  test("contextToCustomElements sets owner on custom elements", () => {
+    const source = `const el = <my-element prop="value">Content</my-element>;`;
+    const result = transformJSX(source, defaultOptions);
+
+    // Custom elements should have _$owner = _$getOwner() set
+    expect(result).toContain("_$getOwner");
+    expect(result).toContain("._$owner");
+  });
+
+  test("contextToCustomElements sets owner on slot elements", () => {
+    const source = `const el = <slot name="header" />;`;
+    const result = transformJSX(source, defaultOptions);
+
+    // Slot elements should have _$owner = _$getOwner() set
+    expect(result).toContain("_$getOwner");
+    expect(result).toContain("._$owner");
+  });
+
+  test("contextToCustomElements: false skips owner assignment", () => {
+    const optionsNoContext: ResolvedGasOptions = {
+      ...defaultOptions,
+      contextToCustomElements: false
+    };
+    const source = `const el = <my-element prop="value">Content</my-element>;`;
+    const result = transformJSX(source, optionsNoContext);
+
+    // Custom elements should NOT have context assignment when disabled
+    expect(result).not.toContain("_$getOwner");
+    expect(result).not.toContain("._$owner");
+  });
+
   test("supports universal runtime configuration", () => {
     const universalOptions: ResolvedGasOptions = {
       ...defaultOptions,
@@ -266,6 +464,31 @@ describe("transformJSX", () => {
     expect(result).toContain('from "solid-js/universal"');
     // Still contains SSR helpers
     expect(result).toContain("_$ssrElement");
+  });
+
+  test("dev mode adds debug comments to templates", () => {
+    const devOptions: ResolvedGasOptions = {
+      ...defaultOptions,
+      dev: true
+    };
+    const source = `const el = <div class="container">Hello World</div>;`;
+    const result = transformJSX(source, devOptions);
+
+    // In dev mode, templates should have HTML preview comments
+    expect(result).toContain("/*");
+    expect(result).toContain("*/");
+  });
+
+  test("dev mode adds debug comments to components", () => {
+    const devOptions: ResolvedGasOptions = {
+      ...defaultOptions,
+      dev: true
+    };
+    const source = `const el = <MyComponent foo="bar" />;`;
+    const result = transformJSX(source, devOptions);
+
+    // In dev mode, components should have name comments
+    expect(result).toContain("/* <MyComponent> */");
   });
 
   test("orders imports then templates then code", () => {
@@ -307,6 +530,20 @@ describe("transformJSX", () => {
     expect(result).toContain("span");
   });
 
+  test("generates correct template IDs for multiple templates", () => {
+    const source = `
+      const a = <div>A</div>;
+      const b = <span>B</span>;
+      const c = <p>C</p>;
+    `;
+    const result = transformJSX(source, defaultOptions);
+
+    // First template is _tmpl$, subsequent are _tmpl$2, _tmpl$3, etc.
+    expect(result).toContain("const _tmpl$ = ");
+    expect(result).toContain("const _tmpl$2 = ");
+    expect(result).toContain("const _tmpl$3 = ");
+  });
+
   test("handles nested components", () => {
     const source = `
       const el = (
@@ -345,6 +582,38 @@ describe("event delegation", () => {
     expect(result).toContain("$$click");
     expect(result).toContain("$$input");
     expect(result).toContain('_$delegateEvents(["click", "input"])');
+  });
+
+  test("delegateEvents: false disables event delegation", () => {
+    const noDelegateOptions: ResolvedGasOptions = { ...defaultOptions, delegateEvents: false };
+    const source = `<button onClick={handler}>Click</button>`;
+    const result = transformJSX(source, noDelegateOptions);
+
+    // Should NOT use delegation
+    expect(result).not.toContain("$$click");
+    expect(result).not.toContain("_$delegateEvents");
+    // Should use addEventListener instead
+    expect(result).toContain("_$addEventListener");
+    expect(result).toContain('"click"');
+  });
+
+  test("on:* syntax always uses non-delegated events", () => {
+    const source = `<div on:scroll={handleScroll}>Content</div>`;
+    const result = transformJSX(source, defaultOptions);
+
+    // on:* syntax should bypass delegation
+    expect(result).not.toContain("$$scroll");
+    expect(result).toContain("_$addEventListener");
+    expect(result).toContain('"scroll"');
+  });
+
+  test("oncapture:* syntax uses capture phase", () => {
+    const source = `<div oncapture:click={handleCapture}>Content</div>`;
+    const result = transformJSX(source, defaultOptions);
+
+    expect(result).toContain("_$addEventListener");
+    expect(result).toContain('"click"');
+    expect(result).toContain("true"); // capture = true
   });
 });
 
@@ -458,8 +727,21 @@ describe("SSR mode", () => {
     const result = transformJSX(source, universalOptions);
  
     expect(result).toContain("solid-js/universal");
-   });
+  });
 
+  test("universal mode uses ssrSpread for spread props", () => {
+    const universalOptions: ResolvedGasOptions = {
+      ...ssrOptions,
+      runtime: "universal",
+      moduleName: "solid-js/universal"
+    };
+    const source = `const el = <div {...props} class="test">Content</div>;`;
+    const result = transformJSX(source, universalOptions);
+ 
+    // Universal mode should use ssrSpread like SSR mode
+    expect(result).toContain("solid-js/universal");
+    expect(result).toContain("_$ssrSpread");
+  });
 
   test("merges spreads with regular props", () => {
     const source = `const view = <Comp {...a} foo={bar} />;`;
@@ -467,6 +749,26 @@ describe("SSR mode", () => {
 
     expect(result).toContain("_$mergeProps");
     expect(result).toContain("{ \"foo\": bar }");
+  });
+
+  test("SSR uses ssrElement helper - closing tag options don't apply at compile time", () => {
+    // SSR mode uses ssrElement helper which generates HTML at runtime
+    // The omitNestedClosingTags and omitLastClosingTag options don't apply
+    // because closing tags are handled by the runtime helper, not compile-time generation
+    const ssrWithOptimization: ResolvedGasOptions = {
+      ...ssrOptions,
+      omitNestedClosingTags: true,
+      omitLastClosingTag: true
+    };
+    const source = `const el = <div><span>First</span><span>Second</span></div>;`;
+    const result = transformJSX(source, ssrWithOptimization);
+
+    // SSR generates ssrElement calls, not raw HTML templates
+    // Closing tag optimization would only apply to raw HTML string generation
+    expect(result).toContain("_$ssrElement(\"div\"");
+    expect(result).toContain("_$ssrElement(\"span\"");
+    // The ssrElement helper handles closing tags at runtime
+    expect(result).not.toContain("_$template");
   });
 
   test("golden dom-basic snapshot exists", () => {
@@ -479,8 +781,8 @@ describe("SSR mode", () => {
     expect(ssrBasic).toContain("_$escape");
   });
 
-  test("golden ssr-spread snapshot merges spreads", () => {
-    expect(ssrSpread).toContain("_$mergeProps");
+  test("golden ssr-spread snapshot uses ssrSpread for spread props", () => {
+    expect(ssrSpread).toContain("_$ssrSpread");
     expect(ssrSpread).toContain("data-hk");
   });
 
@@ -501,7 +803,7 @@ describe("SSR mode", () => {
   test("golden ssr-class-style snapshot uses helpers", () => {
     expect(ssrClassStyle).toContain("_$ssrClassList");
     expect(ssrClassStyle).toContain("_$ssrStyle");
-    expect(ssrClassStyle).toContain("_$mergeProps");
+    expect(ssrClassStyle).toContain("_$ssrSpread");
   });
 
   test("golden ssr-portal-fragment snapshot includes Portal/Show", () => {
@@ -517,9 +819,52 @@ describe("SSR mode", () => {
     expect(ssrDelegation).toContain("onChange");
   });
 
-  test("golden ssr-nested-spread merges spreads and helpers", () => {
-    expect(ssrNestedSpread).toContain("_$mergeProps");
+  test("golden ssr-nested-spread uses ssrSpread and helpers", () => {
+    expect(ssrNestedSpread).toContain("_$ssrSpread");
     expect(ssrNestedSpread).toContain("_$ssrClassList");
     expect(ssrNestedSpread).toContain("_$ssrElement");
+  });
+});
+
+describe("HTML validation", () => {
+  test("throws for <tr> directly in <table>", () => {
+    const source = `const el = <table><tr><td>Cell</td></tr></table>;`;
+    expect(() => transformJSX(source, defaultOptions)).toThrow("<tr> is not a valid direct child of <table>");
+  });
+
+  test("throws for <li> outside of list", () => {
+    const source = `const el = <div><li>Item</li></div>;`;
+    expect(() => transformJSX(source, defaultOptions)).toThrow("<li> elements must be wrapped in <ul>");
+  });
+
+  test("allows <li> in <ul>", () => {
+    const source = `const el = <ul><li>Item</li></ul>;`;
+    expect(() => transformJSX(source, defaultOptions)).not.toThrow();
+  });
+
+  test("throws for <dt> outside of <dl>", () => {
+    const source = `const el = <div><dt>Term</dt></div>;`;
+    expect(() => transformJSX(source, defaultOptions)).toThrow("<dt> elements must be wrapped in <dl>");
+  });
+
+  test("throws for nested <a> elements", () => {
+    const source = `const el = <a href="#"><a href="#">Nested</a></a>;`;
+    expect(() => transformJSX(source, defaultOptions)).toThrow("<a> elements cannot be nested");
+  });
+
+  test("throws for block element in <p>", () => {
+    const source = `const el = <p><div>Block</div></p>;`;
+    expect(() => transformJSX(source, defaultOptions)).toThrow("<div> cannot be a child of <p>");
+  });
+
+  test("throws for nested <form> elements", () => {
+    const source = `const el = <form><form></form></form>;`;
+    expect(() => transformJSX(source, defaultOptions)).toThrow("<form> elements cannot be nested");
+  });
+
+  test("does not validate when validate option is false", () => {
+    const noValidateOptions: ResolvedGasOptions = { ...defaultOptions, validate: false };
+    const source = `const el = <table><tr><td>Cell</td></tr></table>;`;
+    expect(() => transformJSX(source, noValidateOptions)).not.toThrow();
   });
 });

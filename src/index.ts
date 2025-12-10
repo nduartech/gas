@@ -136,7 +136,7 @@ function resolveOptions(options: GasPluginOptions = {}): ResolvedGasOptions {
     omitLastClosingTag: options.omitLastClosingTag ?? true,
     omitQuotes: options.omitQuotes ?? true,
     requireImportSource: options.requireImportSource ?? false,
-    contextToCustomElements: options.contextToCustomElements ?? true,
+    contextToCustomElements: options.contextToCustomElements ?? false,
     staticMarker: options.staticMarker ?? "@once",
     effectWrapper: options.effectWrapper ?? "effect",
     memoWrapper: options.memoWrapper ?? "memo",
@@ -233,25 +233,46 @@ export function gasPlugin(options: GasPluginOptions = {}): BunPlugin {
               loader: "js"
             };
           } catch (error) {
-          // If transformation fails, provide helpful error message with location context
+          // Provide helpful error message with location context
           const message = error instanceof Error ? error.message : String(error);
 
-          // Try to extract line/column info from source if error contains position
-          let locationInfo = "";
-          if (error instanceof Error && "pos" in error && typeof error.pos === "number") {
-            const pos = error.pos as number;
+          // Check for position property (JSXParseError has this)
+          let pos: number | undefined;
+          if (error instanceof Error && "position" in error && typeof error.position === "number") {
+            pos = error.position;
+          } else if (error instanceof Error && "pos" in error && typeof error.pos === "number") {
+            pos = error.pos as number;
+          }
+
+          // Format error with code frame if we have position info
+          if (pos !== undefined) {
             const lines = source.slice(0, pos).split("\n");
             const line = lines.length;
             const column = lines[lines.length - 1]!.length + 1;
-            locationInfo = ` at line ${line}, column ${column}`;
+            const locationInfo = ` at line ${line}, column ${column}`;
  
-            const codeFrameLine = source.split("\n")[line - 1] ?? "";
-            const caret = `${" ".repeat(Math.max(0, column - 1))}^`;
-            const framedMessage = `${message}\n${codeFrameLine}\n${caret}`;
-            throw new Error(`Gas transformation failed for ${args.path}${locationInfo}: ${framedMessage}`);
+            // Build code frame
+            const codeFrameLines: string[] = [];
+            const startLine = Math.max(1, line - 2);
+            const endLine = Math.min(source.split("\n").length, line + 2);
+            const sourceLines = source.split("\n");
+            
+            for (let i = startLine; i <= endLine; i++) {
+              const lineContent = sourceLines[i - 1] ?? "";
+              const prefix = i === line ? "> " : "  ";
+              const lineNum = String(i).padStart(4, " ");
+              codeFrameLines.push(`${prefix}${lineNum} | ${lineContent}`);
+              if (i === line) {
+                const caretPos = column + 7; // Account for prefix and line number
+                codeFrameLines.push(`${" ".repeat(caretPos)}^`);
+              }
+            }
+
+            const codeFrame = codeFrameLines.join("\n");
+            throw new Error(`Gas transformation failed for ${args.path}${locationInfo}:\n\n${message}\n\n${codeFrame}`);
           }
  
-          throw new Error(`Gas transformation failed for ${args.path}${locationInfo}: ${message}`);
+          throw new Error(`Gas transformation failed for ${args.path}: ${message}`);
         }
       });
     }

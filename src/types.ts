@@ -45,13 +45,19 @@ export interface GasPluginOptions {
   wrapConditionals?: boolean;
 
   /**
-   * Optimize template HTML by omitting nested closing tags when safe
+   * Optimize template HTML by omitting nested closing tags when safe.
+   * Note: In DOM mode, this option is ignored because browsers require valid HTML.
+   * In SSR mode, gas uses ssrElement helper which generates closing tags at runtime,
+   * so this option doesn't apply at compile time. Available for forward compatibility.
    * @default false
    */
   omitNestedClosingTags?: boolean;
 
   /**
-   * Optimize template HTML by omitting the last closing tag when safe
+   * Optimize template HTML by omitting the last closing tag when safe.
+   * Note: In DOM mode, this option is ignored because browsers require valid HTML.
+   * In SSR mode, gas uses ssrElement helper which generates closing tags at runtime,
+   * so this option doesn't apply at compile time. Available for forward compatibility.
    * @default true
    */
   omitLastClosingTag?: boolean;
@@ -70,7 +76,10 @@ export interface GasPluginOptions {
 
   /**
    * Convert context to custom elements
-   * @default true
+   * Set the current render context on custom elements (tags with "-") and slot elements.
+   * This enables the Context API to work seamlessly with Web Components by assigning
+   * `element._$owner = getOwner()` to preserve the reactive context.
+   * @default false
    */
   contextToCustomElements?: boolean;
 
@@ -99,7 +108,10 @@ export interface GasPluginOptions {
   validate?: boolean;
 
   /**
-   * Enable development mode with additional debugging info
+   * Enable development mode with additional debugging info.
+   * When enabled, adds comments to generated code showing:
+   * - Template HTML content preview for easier debugging
+   * - Component names next to createComponent calls
    * @default false
    */
   dev?: boolean;

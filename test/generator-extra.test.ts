@@ -129,8 +129,8 @@ describe("generateSolidCode (SSR)", () => {
     expect(result.imports.has("ssrElement")).toBe(true);
     expect(result.imports.has("ssrClassList")).toBe(true);
     expect(result.imports.has("ssrStyle")).toBe(true);
-    // ssrAttribute only needed for boolean attrs; prop: / attr: are direct
-    expect(result.imports.has("ssrAttribute") || result.imports.has("mergeProps")).toBe(true);
+    // ssrSpread is used for spread props in SSR mode
+    expect(result.imports.has("ssrSpread")).toBe(true);
     expect(result.code).toContain("_$ssrElement");
     expect(result.code).toContain("ssrClassList");
     expect(result.code).toContain("ssrStyle");

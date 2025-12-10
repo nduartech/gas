@@ -21,13 +21,39 @@ function loadTypeScript(): typeof import("typescript") {
 }
 
 /**
+ * Check if the source contains a @jsxImportSource pragma matching the required value.
+ * Handles various comment formats:
+ * - /** @jsxImportSource solid-js * /
+ * - /* @jsxImportSource solid-js * /
+ * - // @jsxImportSource solid-js
+ * Also handles whitespace variations.
+ */
+function hasMatchingImportSourcePragma(source: string, requiredSource: string): boolean {
+  // Escape special regex characters in the required source
+  const escapedSource = requiredSource.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  
+  // Match block comments: /* @jsxImportSource value */ or /** @jsxImportSource value */
+  const blockCommentPattern = new RegExp(
+    `\\/\\*\\*?\\s*@jsxImportSource\\s+${escapedSource}\\s*\\*\\/`,
+    "m"
+  );
+  
+  // Match line comments: // @jsxImportSource value
+  const lineCommentPattern = new RegExp(
+    `\\/\\/\\s*@jsxImportSource\\s+${escapedSource}(?:\\s|$)`,
+    "m"
+  );
+  
+  return blockCommentPattern.test(source) || lineCommentPattern.test(source);
+}
+
+/**
  * Transform source code containing JSX into SolidJS-compatible JavaScript
  */
 export function transformJSX(source: string, options: ResolvedGasOptions): string {
   // If a specific JSX import source is required, only transform when the pragma matches
   if (options.requireImportSource) {
-    const marker = `@jsxImportSource ${options.requireImportSource}`;
-    if (!source.includes(marker)) {
+    if (!hasMatchingImportSourcePragma(source, options.requireImportSource)) {
       return source;
     }
   }
@@ -162,6 +188,7 @@ function generateImportStatement(
     memo: "_$memo",
     escape: "_$escape",
     createComponent: "_$createComponent",
+    getOwner: "_$getOwner",
     ssrHydrationKey: "_$ssrHydrationKey",
     ssrElement: "_$ssrElement",
     ssrClassList: "_$ssrClassList",
@@ -184,6 +211,7 @@ function generateImportStatement(
     "memo",
     "escape",
     "createComponent",
+    "getOwner",
     "ssrHydrationKey",
     "ssrElement",
     "ssrClassList",

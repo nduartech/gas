@@ -70,7 +70,9 @@ export function generateSolidCode(
       const templateCall = t.isSVG
         ? `_$template(\`${escapeTemplate(t.html)}\`, ${t.isSVG ? "2" : "0"})`
         : `_$template(\`${escapeTemplate(t.html)}\`)`;
-      return `const ${t.id} = /*#__PURE__*/${templateCall};`;
+      // In dev mode, add a comment with the template content for easier debugging
+      const devComment = ctx.options.dev ? ` /* ${t.html.slice(0, 50)}${t.html.length > 50 ? "..." : ""} */` : "";
+      return `const ${t.id} = /*#__PURE__*/${templateCall};${devComment}`;
     });
 
   return {
@@ -98,7 +100,9 @@ export function generateSolidCodeWithContext(
       const templateCall = t.isSVG
         ? `_$template(\`${escapeTemplate(t.html)}\`, ${t.isSVG ? "2" : "0"})`
         : `_$template(\`${escapeTemplate(t.html)}\`)`;
-      return `const ${t.id} = /*#__PURE__*/${templateCall};`;
+      // In dev mode, add a comment with the template content for easier debugging
+      const devComment = ctx.options.dev ? ` /* ${t.html.slice(0, 50)}${t.html.length > 50 ? "..." : ""} */` : "";
+      return `const ${t.id} = /*#__PURE__*/${templateCall};${devComment}`;
     });
 
   return {
@@ -183,7 +187,9 @@ function generateComponent(jsx: ParsedJSX, ctx: GeneratorContext): GeneratedElem
   const componentRef = tag;
 
   ctx.imports.add("createComponent");
-  const code = `_$createComponent(${componentRef}, ${propsCode})`;
+  // In dev mode, add a comment with the component name for easier debugging
+  const devComment = ctx.options.dev ? ` /* <${tag}> */` : "";
+  const code = `_$createComponent(${componentRef}, ${propsCode})${devComment}`;
 
   return { code, isStatic: false };
 }
@@ -194,12 +200,15 @@ function generateComponentSSR(jsx: ParsedJSX, ctx: GeneratorContext): GeneratedE
   // Built-ins are invoked directly
   if (ctx.options.builtIns.has(tag)) {
     const propsCode = generatePropsObjectSSR(props, children, ctx);
-    return { code: `${tag}(${propsCode})`, isStatic: false };
+    const devComment = ctx.options.dev ? ` /* <${tag}> */` : "";
+    return { code: `${tag}(${propsCode})${devComment}`, isStatic: false };
   }
 
   const propsCode = generatePropsObjectSSR(props, children, ctx);
   ctx.imports.add("createComponent");
-  return { code: `_$createComponent(${tag}, ${propsCode})`, isStatic: false };
+  // In dev mode, add a comment with the component name for easier debugging
+  const devComment = ctx.options.dev ? ` /* <${tag}> */` : "";
+  return { code: `_$createComponent(${tag}, ${propsCode})${devComment}`, isStatic: false };
 }
 
 function generateBuiltInComponent(jsx: ParsedJSX, ctx: GeneratorContext): GeneratedElement {
@@ -225,6 +234,10 @@ function generateDOMElement(jsx: ParsedJSX, ctx: GeneratorContext): GeneratedEle
   const { staticProps, dynamicProps, eventProps, refProp, spreadProps, specialProps } =
     categorizeProps(props);
 
+  // Check if element is a custom element or slot that needs context
+  const isCustomElement = tag.includes("-") || tag === "slot";
+  const needsContext = ctx.options.contextToCustomElements && isCustomElement;
+
   // Check if element is fully static
   const hasAnyDynamic =
     dynamicProps.length > 0 ||
@@ -232,6 +245,7 @@ function generateDOMElement(jsx: ParsedJSX, ctx: GeneratorContext): GeneratedEle
     refProp !== null ||
     spreadProps.length > 0 ||
     specialProps.length > 0 ||
+    needsContext || // Custom elements need dynamic handling for context
     children.some(child => !isStaticChild(child));
 
   if (!hasAnyDynamic) {
@@ -320,6 +334,13 @@ function generateDynamicElement(
   const statements: string[] = [];
 
   statements.push(`const ${varName} = ${templateId}();`);
+
+  // Set context on custom elements and slots for Web Component interop
+  const isCustomElement = tag.includes("-") || tag === "slot";
+  if (ctx.options.contextToCustomElements && isCustomElement) {
+    ctx.imports.add("getOwner");
+    statements.push(`${varName}._$owner = _$getOwner();`);
+  }
 
   // Handle spread props first (they can override everything)
   if (spreadProps.length > 0) {
@@ -626,11 +647,19 @@ function buildSSRProps(tag: string, props: ParsedProp[], ctx: GeneratorContext):
   if (!hasSpread && !hasRegular) return "{}";
 
   if (hasSpread) {
-    ctx.imports.add("mergeProps");
+    // In SSR mode, use ssrSpread for spread props
+    ctx.imports.add("ssrSpread");
     if (hasRegular) {
-      return `_$mergeProps(${spreads.join(", ")}, { ${regular.join(", ")} })`;
+      // Merge spread props with regular props using ssrSpread
+      const spreadMerge = spreads.length === 1
+        ? `_$ssrSpread(${spreads[0]})`
+        : spreads.map(s => `_$ssrSpread(${s})`).join(" + ");
+      return `Object.assign({}, ${spreadMerge}, { ${regular.join(", ")} })`;
     }
-    return spreads.length === 1 ? spreads[0]! : `_$mergeProps(${spreads.join(", ")})`;
+    if (spreads.length === 1) {
+      return `_$ssrSpread(${spreads[0]})`;
+    }
+    return spreads.map(s => `_$ssrSpread(${s})`).join(" + ");
   }
 
   return `{ ${regular.join(", ")} }`;
@@ -1235,48 +1264,112 @@ function isConditionalExpression(expr: string): boolean {
   return maybeTernary || maybeLogical;
  }
  
+ // Block elements that cannot be inside <p>
+ const BLOCK_ELEMENTS = new Set([
+   "address", "article", "aside", "blockquote", "dd", "details", "dialog",
+   "div", "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form",
+   "h1", "h2", "h3", "h4", "h5", "h6", "header", "hgroup", "hr", "li",
+   "main", "nav", "ol", "p", "pre", "section", "table", "ul"
+ ]);
+
+ // Interactive elements that cannot be nested inside other interactive elements
+ const INTERACTIVE_ELEMENTS = new Set([
+   "a", "button", "details", "embed", "iframe", "label", "select", "textarea"
+ ]);
+
  function validateDOMStructure(tag: string, children: ParsedChild[]): void {
-  // Minimal DOM validation: disallow some obviously invalid structures
   const lowerTag = tag.toLowerCase();
 
-  // <tr> must be inside <thead>, <tbody>, or <tfoot>
-  if (lowerTag === "table") {
-    for (const child of children) {
-      if (child.type === "element") {
-        const childTag = child.value.tag.toLowerCase();
-        if (childTag === "tr") {
-          throw new Error("<tr> is not a valid direct child of <table>; wrap it in <thead>, <tbody>, or <tfoot>.");
-        }
-      }
-    }
-  }
+  for (const child of children) {
+    if (child.type !== "element") continue;
+    const childTag = child.value.tag.toLowerCase();
 
-  // <li> must be inside <ul> or <ol>
-  if (lowerTag !== "ul" && lowerTag !== "ol") {
-    for (const child of children) {
-      if (child.type === "element") {
-        const childTag = child.value.tag.toLowerCase();
-        if (childTag === "li") {
-          throw new Error("<li> elements must be wrapped in <ul> or <ol>, not placed directly under <" + tag + ">.");
-        }
-      }
+    // <tr> must be inside <thead>, <tbody>, or <tfoot>, not directly in <table>
+    if (lowerTag === "table" && childTag === "tr") {
+      throw new Error("<tr> is not a valid direct child of <table>; wrap it in <thead>, <tbody>, or <tfoot>.");
+    }
+
+    // <li> must be inside <ul>, <ol>, or <menu>
+    if (childTag === "li" && lowerTag !== "ul" && lowerTag !== "ol" && lowerTag !== "menu") {
+      throw new Error("<li> elements must be wrapped in <ul>, <ol>, or <menu>, not placed directly under <" + tag + ">.");
+    }
+
+    // <dt> and <dd> must be inside <dl>
+    if ((childTag === "dt" || childTag === "dd") && lowerTag !== "dl") {
+      throw new Error(`<${childTag}> elements must be wrapped in <dl>, not placed directly under <${tag}>.`);
+    }
+
+    // <th> and <td> must be inside <tr>
+    if ((childTag === "th" || childTag === "td") && lowerTag !== "tr") {
+      throw new Error(`<${childTag}> elements must be inside <tr>, not <${tag}>.`);
+    }
+
+    // <caption>, <colgroup>, <thead>, <tbody>, <tfoot> must be inside <table>
+    if ((childTag === "caption" || childTag === "colgroup" || childTag === "thead" || 
+         childTag === "tbody" || childTag === "tfoot") && lowerTag !== "table") {
+      throw new Error(`<${childTag}> elements must be inside <table>, not <${tag}>.`);
+    }
+
+    // <p> cannot contain block elements
+    if (lowerTag === "p" && BLOCK_ELEMENTS.has(childTag)) {
+      throw new Error(`<${childTag}> cannot be a child of <p>; browsers will auto-close the <p>.`);
+    }
+
+    // <a> cannot contain other <a> elements
+    if (lowerTag === "a" && childTag === "a") {
+      throw new Error("<a> elements cannot be nested inside other <a> elements.");
+    }
+
+    // <button> cannot contain interactive elements
+    if (lowerTag === "button" && INTERACTIVE_ELEMENTS.has(childTag)) {
+      throw new Error(`<${childTag}> cannot be a child of <button>; interactive elements cannot be nested.`);
+    }
+
+    // <label> cannot contain other <label> elements
+    if (lowerTag === "label" && childTag === "label") {
+      throw new Error("<label> elements cannot be nested inside other <label> elements.");
+    }
+
+    // <form> cannot contain other <form> elements
+    if (lowerTag === "form" && childTag === "form") {
+      throw new Error("<form> elements cannot be nested inside other <form> elements.");
     }
   }
  }
  
+ /**
+  * Check if expression contains a static marker comment.
+  * Handles various formats:
+  * - /*@once* /
+  * - /* @once * /
+  * - /*  @once  * /
+  */
  function hasStaticMarker(expr: string, options: ResolvedGasOptions): boolean {
-
   const marker = options.staticMarker;
   if (!marker) return false;
-  const token = `/*${marker}*/`;
-  return expr.includes(token);
+  
+  // Escape special regex characters in the marker
+  const escapedMarker = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  
+  // Match block comment with the marker, allowing whitespace variations
+  const pattern = new RegExp(`\\/\\*\\s*${escapedMarker}\\s*\\*\\/`);
+  return pattern.test(expr);
  }
  
+ /**
+  * Strip static marker comment from expression.
+  * Handles various formats with whitespace variations.
+  */
  function stripStaticMarker(expr: string, options: ResolvedGasOptions): string {
    const marker = options.staticMarker;
    if (!marker) return expr;
-   const token = `/*${marker}*/`;
-   return expr.replace(token, "").trim();
+   
+   // Escape special regex characters in the marker
+   const escapedMarker = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+   
+   // Match block comment with the marker, allowing whitespace variations
+   const pattern = new RegExp(`\\/\\*\\s*${escapedMarker}\\s*\\*\\/`);
+   return expr.replace(pattern, "").trim();
  }
  
  function escapeTemplate(html: string): string {
