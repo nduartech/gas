@@ -187,6 +187,22 @@ describe("parseJSX", () => {
     }
   });
 
+  test("identifies SVG style elements", () => {
+    const svg = parseJSX(`<svg><defs><style>.test { fill: red; }</style></defs></svg>`);
+
+    expect(svg.isSVG).toBe(true);
+    expect(svg.children[0]!.type).toBe("element");
+    if (svg.children[0]!.type === "element") {
+      const defs = svg.children[0]!.value;
+      expect(defs.isSVG).toBe(true);
+      expect(defs.children[0]!.type).toBe("element");
+      if (defs.children[0]!.type === "element") {
+        expect(defs.children[0]!.value.isSVG).toBe(true);
+        expect(defs.children[0]!.value.tag).toBe("style");
+      }
+    }
+  });
+
   test("parses event handlers", () => {
     const result = parseJSX(`<button onClick={handleClick}>Click</button>`);
 

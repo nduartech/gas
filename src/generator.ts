@@ -848,6 +848,15 @@ function generateDynamicAttribute(
 
   // Class attribute
   if (name === "class" || name === "className") {
+    // SVG elements have read-only className property, must use setAttribute
+    if (isSVG) {
+      if (isPotentiallyReactive) {
+        ctx.imports.add("effect");
+        return `_$effect(() => ${varName}.setAttribute("class", ${expr}));`;
+      }
+      return `${varName}.setAttribute("class", ${expr});`;
+    }
+    // Regular HTML elements can use className property
     if (isPotentiallyReactive) {
       ctx.imports.add("effect");
       return `_$effect(() => ${varName}.className = ${expr});`;

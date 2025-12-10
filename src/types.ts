@@ -225,6 +225,7 @@ export const SVG_ELEMENTS = new Set([
   "rect",
   "set",
   "stop",
+  "style",
   "switch",
   "symbol",
   "text",

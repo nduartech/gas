@@ -417,6 +417,43 @@ describe("transformJSX", () => {
     expect(result).toContain("circle");
   });
 
+  test("SVG elements with dynamic className use setAttribute instead of className property", () => {
+    const source = `const el = <svg className={someSignal()}>Content</svg>;`;
+    const result = transformJSX(source, defaultOptions);
+ 
+    // SVG elements should use setAttribute("class", ...) in effect, not .className =
+    expect(result).toContain('setAttribute("class"');
+    expect(result).toContain("_$effect");
+    expect(result).not.toMatch(/\.className\s*=/);
+  });
+
+  test("SVG elements with dynamic class attribute use setAttribute", () => {
+    const source = `const el = <svg class={someSignal()}>Content</svg>;`;
+    const result = transformJSX(source, defaultOptions);
+ 
+    // SVG elements should use setAttribute("class", ...) not .className =
+    expect(result).toContain('setAttribute("class"');
+    expect(result).not.toMatch(/\.className\s*=/);
+  });
+
+  test("SVG elements with static className expression use setAttribute", () => {
+    const source = `const el = <svg className={"my-class"}>Content</svg>;`;
+    const result = transformJSX(source, defaultOptions);
+ 
+    // Even static expressions on SVG should use setAttribute("class", ...) not .className =
+    expect(result).toContain('setAttribute("class"');
+    expect(result).not.toMatch(/\.className\s*=/);
+  });
+
+  test("Regular HTML elements with dynamic className still use className property", () => {
+    const source = `const el = <div className={someSignal()}>Content</div>;`;
+    const result = transformJSX(source, defaultOptions);
+ 
+    // Regular HTML elements should use .className = not setAttribute
+    expect(result).toMatch(/\.className\s*=/);
+    expect(result).not.toContain('setAttribute("class"');
+  });
+
   test("contextToCustomElements sets owner on custom elements", () => {
     const source = `const el = <my-element prop="value">Content</my-element>;`;
     const result = transformJSX(source, defaultOptions);

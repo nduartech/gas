@@ -286,6 +286,7 @@ function isSvgTag(tag: string): boolean {
     "rect",
     "set",
     "stop",
+    "style",
     "switch",
     "symbol",
     "text",
