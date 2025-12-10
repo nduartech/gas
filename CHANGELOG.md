@@ -1,5 +1,11 @@
 # @nathanld/gas
 
+## 0.0.4
+
+### Patch Changes
+
+- 44e9337: Chasing feature parity with babel-preset-solid
+
 ## 0.0.3
 
 ### Patch Changes
