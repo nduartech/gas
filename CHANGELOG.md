@@ -1,5 +1,11 @@
 # @nathanld/gas
 
+## 0.0.3
+
+### Patch Changes
+
+- 3b0bd8b: Expanded parity with babel-preset-solid
+
 ## 0.0.2
 
 ### Patch Changes
