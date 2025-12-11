@@ -1,30 +1,25 @@
-import { createRequire } from "module";
 import type { JsxAttributes, JsxChild, Node, SourceFile } from "typescript";
 import type { ParsedChild, ParsedJSX, ParsedProp } from "./parser.js";
+import { formatParseError, getTypeScriptModule, getTypeScriptModules } from "./ts-module.js";
 
-const require = createRequire(import.meta.url);
-let ts: typeof import("typescript") = loadTypeScript();
-
-function loadTypeScript(): typeof import("typescript") {
-  try {
-    return require("@typescript/native-preview");
-  } catch {
-    return require("typescript");
-  }
-}
+let ts = getTypeScriptModule();
 
 function createSourceFileSafe(source: string, fileName: string): import("typescript").SourceFile {
+  const modules = getTypeScriptModules();
+  const primary = modules.primary;
   try {
+    ts = primary.ts;
     return ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  } catch (error) {
-    // If native-preview fails, fall back to the regular TypeScript parser
-    try {
-      const fallbackTs: typeof import("typescript") = require("typescript");
-      ts = fallbackTs;
-      return ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-    } catch {
-      throw error;
+  } catch (primaryError) {
+    if (modules.fallback) {
+      try {
+        ts = modules.fallback.ts;
+        return ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+      } catch (fallbackError) {
+        throw formatParseError(fileName, primary, primaryError, modules.fallback, fallbackError);
+      }
     }
+    throw formatParseError(fileName, primary, primaryError);
   }
 }
 

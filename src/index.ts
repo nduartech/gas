@@ -26,22 +26,7 @@
 
 import type { GasPluginOptions, ResolvedGasOptions } from "./types.js";
 import { transformJSX, hasJSX } from "./transformer.js";
-import { createRequire } from "module";
-
-const require = createRequire(import.meta.url);
-
-type TypeScriptModule = typeof import("typescript");
-let tsModule: TypeScriptModule | undefined;
-
-function getTypeScriptModule(): TypeScriptModule {
-  if (tsModule) return tsModule;
-  try {
-    tsModule = require("@typescript/native-preview");
-  } catch {
-    tsModule = require("typescript");
-  }
-  return tsModule!;
-}
+import { getTypeScriptModule } from "./ts-module.js";
 
 function transpileWithFallback(
   source: string,

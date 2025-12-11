@@ -4,21 +4,12 @@
  * Main transformation entry point that coordinates parsing and code generation.
  */
 
-import { createRequire } from "module";
 import { findJSXExpressionsAST, convertJSXFromAST } from "./ast.js";
 import { generateSolidCodeWithContext } from "./generator.js";
 import type { ResolvedGasOptions } from "./types.js";
+import { getTypeScriptModule } from "./ts-module.js";
 
-const require = createRequire(import.meta.url);
-const ts: typeof import("typescript") = loadTypeScript();
-
-function loadTypeScript(): typeof import("typescript") {
-  try {
-    return require("@typescript/native-preview");
-  } catch {
-    return require("typescript");
-  }
-}
+const ts = getTypeScriptModule();
 
 /**
  * Check if the source contains a @jsxImportSource pragma matching the required value.
