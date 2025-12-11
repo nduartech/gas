@@ -1,5 +1,11 @@
 # @nathanld/gas
 
+## 0.0.5
+
+### Patch Changes
+
+- fdadf71: Fix package deps
+
 ## 0.0.4
 
 ### Patch Changes
