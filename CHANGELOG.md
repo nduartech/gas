@@ -1,5 +1,11 @@
 # @nathanld/gas
 
+## 0.0.6
+
+### Patch Changes
+
+- 93029ba: Update deps
+
 ## 0.0.5
 
 ### Patch Changes
