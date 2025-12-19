@@ -1,5 +1,11 @@
 # @nathanld/gas
 
+## 0.0.7
+
+### Patch Changes
+
+- 2639d26: Further hops towards parity
+
 ## 0.0.6
 
 ### Patch Changes
