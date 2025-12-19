@@ -583,6 +583,16 @@ function buildSSRProps(tag: string, props: ParsedProp[], ctx: GeneratorContext):
       continue;
     }
 
+    if (name === "class" || name === "className") {
+      if (value.type === "expression") {
+        ctx.imports.add("ssrClassList");
+        regular.push(`"class": _$ssrClassList(${value.value})`);
+      } else if (value.type === "string") {
+        regular.push(`"class": ${JSON.stringify(value.value)}`);
+      }
+      continue;
+    }
+
     if (name === "style") {
       ctx.imports.add("ssrStyle");
       if (value.type === "expression") {

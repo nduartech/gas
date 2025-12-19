@@ -99,7 +99,7 @@ function resolveOptions(options: GasPluginOptions = {}): ResolvedGasOptions {
   const moduleName = runtime === "ssr"
     ? "solid-js/web"
     : runtime === "universal"
-    ? "solid-js/universal"
+    ? (options.moduleName ?? "solid-js/universal")  // Allow custom moduleName
     : options.moduleName ?? "solid-js/web";
 
   validateOptions({
@@ -155,10 +155,6 @@ function validateOptions(options: {
 
   if (options.runtime === "ssr" && options.moduleName !== "solid-js/web") {
     throw new Error("runtime=\"ssr\" forces moduleName to solid-js/web");
-  }
-
-  if (options.runtime === "universal" && options.moduleName !== "solid-js/universal") {
-    throw new Error("runtime=\"universal\" forces moduleName to solid-js/universal");
   }
 }
 

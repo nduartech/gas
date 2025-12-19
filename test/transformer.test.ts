@@ -746,7 +746,7 @@ describe("SSR mode", () => {
   });
 
   test("adds hydration key when hydratable", () => {
-    const source = `const el = <span id=\"a\" />;`;
+    const source = `const el = <span id="a" />;`;
     const hydratableOptions = { ...ssrOptions, hydratable: true };
     const result = transformJSX(source, hydratableOptions);
 
@@ -774,10 +774,39 @@ describe("SSR mode", () => {
     };
     const source = `const el = <div {...props} class="test">Content</div>;`;
     const result = transformJSX(source, universalOptions);
- 
+
     // Universal mode should use ssrSpread like SSR mode
     expect(result).toContain("solid-js/universal");
     expect(result).toContain("_$ssrSpread");
+  });
+
+  test("universal runtime with custom moduleName works", () => {
+    const customUniversalOptions: ResolvedGasOptions = {
+      ...ssrOptions,
+      runtime: "universal",
+      moduleName: "@opentui/solid"
+    };
+    const source = `const el = <div>{value}</div>;`;
+    const result = transformJSX(source, customUniversalOptions);
+
+    expect(result).toContain("@opentui/solid");
+    expect(result).toContain("_$ssrElement");
+  });
+
+  test("universal runtime with custom moduleName generates correct imports", () => {
+    const customUniversalOptions: ResolvedGasOptions = {
+      ...ssrOptions,
+      runtime: "universal",
+      moduleName: "@opentui/solid"
+    };
+    const source = `const el = <div class={cls()} onClick={handle}>Hi {name}</div>;`;
+    const result = transformJSX(source, customUniversalOptions);
+
+    // Should import from custom module
+    expect(result).toContain('from "@opentui/solid"');
+    // Should use SSR helpers
+    expect(result).toContain("_$ssrElement");
+    expect(result).toContain("_$ssrClassList");
   });
 
   test("merges spreads with regular props", () => {

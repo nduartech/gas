@@ -22,7 +22,8 @@ export interface GasPluginOptions {
 
   /**
    * Preset for module targeting: "dom" -> solid-js/web, "ssr" -> solid-js/web (server build),
-   * "universal" -> solid-js/universal. When set, overrides moduleName.
+   * "universal" -> solid-js/universal (default, but moduleName can be customized).
+   * When set, provides defaults for moduleName but custom moduleName can override.
    */
   runtime?: "dom" | "ssr" | "universal";
 
