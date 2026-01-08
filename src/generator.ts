@@ -12,14 +12,132 @@ import {
   BOOLEAN_ATTRS,
   PROPERTY_ATTRS
 } from "./types.js";
+import { getTypeScriptModule } from "./ts-module.js";
+
+const ts = getTypeScriptModule();
+const tsPrinter = ts.createPrinter({ removeComments: true });
 
 interface GeneratorContext {
   templates: TemplateInfo[];
   templateCounter: number;
   imports: Set<string>;
+  importAliases: Map<string, string>;
   delegatedEvents: Set<string>;
   options: ResolvedGasOptions;
   varCounter: number;
+  usedNames: Set<string>;
+  namespaceImports: Set<string>;
+  ssrTemplates: { id: string; parts: string[] }[];
+  ssrTemplateCache: Map<string, string>;
+}
+
+const NAMESPACE_URIS: Record<string, string> = {
+  xlink: "http://www.w3.org/1999/xlink",
+  xml: "http://www.w3.org/XML/1998/namespace",
+  xmlns: "http://www.w3.org/2000/xmlns/"
+};
+
+function parseNamespacedAttr(name: string): { namespaceUri: string; localName: string } | null {
+  const parts = name.split(":");
+  if (parts.length !== 2) return null;
+  const [prefix, localName] = parts;
+  if (!prefix || !localName) return null;
+  const namespaceUri = NAMESPACE_URIS[prefix];
+  if (!namespaceUri) return null;
+  return { namespaceUri, localName };
+}
+
+function allocName(ctx: GeneratorContext, preferred: string): string {
+  if (!ctx.usedNames.has(preferred)) {
+    ctx.usedNames.add(preferred);
+    return preferred;
+  }
+  // Numeric suffix strategy: foo -> foo2 -> foo3 ...
+  let i = 2;
+  while (ctx.usedNames.has(`${preferred}${i}`)) i++;
+  const next = `${preferred}${i}`;
+  ctx.usedNames.add(next);
+  return next;
+}
+
+function allocTemplateId(ctx: GeneratorContext): string {
+  // dom-expressions uses _tmpl$, _tmpl$2, _tmpl$3...
+  const base = "_tmpl$";
+  if (!ctx.usedNames.has(base)) {
+    ctx.usedNames.add(base);
+    return base;
+  }
+  let i = 2;
+  while (ctx.usedNames.has(`${base}${i}`)) i++;
+  const next = `${base}${i}`;
+  ctx.usedNames.add(next);
+  return next;
+}
+
+function allocVar(ctx: GeneratorContext, prefix: string): string {
+  // e.g. _el$0, _el$1 ... but skip any reserved names in the original source.
+  while (true) {
+    const name = `${prefix}${ctx.varCounter++}`;
+    if (!ctx.usedNames.has(name)) {
+      ctx.usedNames.add(name);
+      return name;
+    }
+  }
+}
+
+function useImport(ctx: GeneratorContext, key: string, preferredLocal: string): string {
+  ctx.imports.add(key);
+  const existing = ctx.importAliases.get(key);
+  if (existing) return existing;
+  const local = allocName(ctx, preferredLocal);
+  ctx.importAliases.set(key, local);
+  return local;
+}
+
+function h(ctx: GeneratorContext, key: string): string {
+  // Default local binding names match existing output for non-collision cases.
+  switch (key) {
+    case "template": return useImport(ctx, "template", "_$template");
+    case "getNextElement": return useImport(ctx, "getNextElement", "_$getNextElement");
+    case "getNextMarker": return useImport(ctx, "getNextMarker", "_$getNextMarker");
+    case "getNextMatch": return useImport(ctx, "getNextMatch", "_$getNextMatch");
+    case "insert": return useImport(ctx, "insert", "_$insert");
+    case "spread": return useImport(ctx, "spread", "_$spread");
+    case "mergeProps": return useImport(ctx, "mergeProps", "_$mergeProps");
+    case "classList": return useImport(ctx, "classList", "_$classList");
+    case "style": return useImport(ctx, "style", "_$style");
+    case "use": return useImport(ctx, "use", "_$use");
+    case "addEventListener": return useImport(ctx, "addEventListener", "_$addEventListener");
+    case "delegateEvents": return useImport(ctx, "delegateEvents", "_$delegateEvents");
+    case "effect": return useImport(ctx, "effect", "_$effect");
+    case "memo": return useImport(ctx, "memo", "_$memo");
+    case "escape": return useImport(ctx, "escape", "_$escape");
+    case "createComponent": return useImport(ctx, "createComponent", "_$createComponent");
+    case "NoHydration": return useImport(ctx, "NoHydration", "_$NoHydration");
+    case "getOwner": return useImport(ctx, "getOwner", "_$getOwner");
+    case "setAttribute": return useImport(ctx, "setAttribute", "_$setAttribute");
+    case "setAttributeNS": return useImport(ctx, "setAttributeNS", "_$setAttributeNS");
+    case "setBoolAttribute": return useImport(ctx, "setBoolAttribute", "_$setBoolAttribute");
+    case "setProperty": return useImport(ctx, "setProperty", "_$setProperty");
+    case "className": return useImport(ctx, "className", "_$className");
+    case "ssrElement": return useImport(ctx, "ssrElement", "_$ssrElement");
+    case "ssrHydrationKey": return useImport(ctx, "ssrHydrationKey", "_$ssrHydrationKey");
+    case "ssr": return useImport(ctx, "ssr", "_$ssr");
+    case "ssrSpread": return useImport(ctx, "ssrSpread", "_$ssrSpread");
+    case "ssrClassList": return useImport(ctx, "ssrClassList", "_$ssrClassList");
+    case "ssrStyle": return useImport(ctx, "ssrStyle", "_$ssrStyle");
+    case "ssrStyleProperty": return useImport(ctx, "ssrStyleProperty", "_$ssrStyleProperty");
+    case "ssrAttribute": return useImport(ctx, "ssrAttribute", "_$ssrAttribute");
+    default:
+      return useImport(ctx, key, `_$${key}`);
+  }
+}
+
+function wrapEffect(ctx: GeneratorContext, bodyExpr: string): string {
+  // dom-expressions parity: effectWrapper can be false (wrapperless mode).
+  if (ctx.options.effectWrapper === false) return `${bodyExpr};`;
+  const effectFn = h(ctx, "effect");
+  return `${effectFn}(() => ${bodyExpr});`;
 }
 
 function rewriteNestedJSX(expr: string, ctx: GeneratorContext): string {
@@ -57,23 +175,38 @@ export function generateSolidCode(
     templates: [],
     templateCounter: 0,
     imports: new Set(),
+    importAliases: new Map(),
     delegatedEvents: new Set(),
     options,
-    varCounter: 0
+    varCounter: 0,
+    usedNames: new Set(),
+    namespaceImports: new Set(),
+    ssrTemplates: [],
+    ssrTemplateCache: new Map()
   };
 
-  const result = generateElement(jsx, ctx);
+  const result = ctx.options.generate === "ssr" ? generateElementSSR(jsx, ctx, true) : generateElement(jsx, ctx);
 
   // Build template declarations
-  const templateDeclarations = ctx.templates
-    .map(t => {
-      const templateCall = t.isSVG
-        ? `_$template(\`${escapeTemplate(t.html)}\`, ${t.isSVG ? "2" : "0"})`
-        : `_$template(\`${escapeTemplate(t.html)}\`)`;
-      // In dev mode, add a comment with the template content for easier debugging
-      const devComment = ctx.options.dev ? ` /* ${t.html.slice(0, 50)}${t.html.length > 50 ? "..." : ""} */` : "";
-      return `const ${t.id} = /*#__PURE__*/${templateCall};${devComment}`;
-    });
+  const templateDeclarations =
+    ctx.options.generate === "ssr"
+      ? ctx.ssrTemplates.map(t => {
+          const literal =
+            t.parts.length === 1
+              ? JSON.stringify(t.parts[0]!)
+              : `[${t.parts.map(p => JSON.stringify(p)).join(", ")}]`;
+          return `var ${t.id} = ${literal};`;
+        })
+      : ctx.templates.map(t => {
+          const templateFn = h(ctx, "template");
+          const templateCall = t.isSVG
+            ? `${templateFn}(\`${escapeTemplate(t.html)}\`, ${t.isSVG ? "2" : "0"})`
+            : `${templateFn}(\`${escapeTemplate(t.html)}\`)`;
+          // In dev mode, add a comment with the template content for easier debugging
+          const devComment =
+            ctx.options.dev ? ` /* ${t.html.slice(0, 50)}${t.html.length > 50 ? "..." : ""} */` : "";
+          return `const ${t.id} = /*#__PURE__*/${templateCall};${devComment}`;
+        });
 
   return {
     code: result.code,
@@ -90,20 +223,29 @@ export function generateSolidCodeWithContext(
   jsx: ParsedJSX,
   ctx: GeneratorContext
 ): { code: string; imports: Set<string>; delegatedEvents: Set<string>; templates: string[] } {
-  const initialTemplateCount = ctx.templates.length;
-  const result = generateElement(jsx, ctx);
+  const initialDomTemplateCount = ctx.templates.length;
+  const initialSsrTemplateCount = ctx.ssrTemplates.length;
+  const result = ctx.options.generate === "ssr" ? generateElementSSR(jsx, ctx, true) : generateElement(jsx, ctx);
 
-  // Build template declarations for new templates only
-  const newTemplates = ctx.templates.slice(initialTemplateCount);
-  const templateDeclarations = newTemplates
-    .map(t => {
-      const templateCall = t.isSVG
-        ? `_$template(\`${escapeTemplate(t.html)}\`, ${t.isSVG ? "2" : "0"})`
-        : `_$template(\`${escapeTemplate(t.html)}\`)`;
-      // In dev mode, add a comment with the template content for easier debugging
-      const devComment = ctx.options.dev ? ` /* ${t.html.slice(0, 50)}${t.html.length > 50 ? "..." : ""} */` : "";
-      return `const ${t.id} = /*#__PURE__*/${templateCall};${devComment}`;
-    });
+  const templateDeclarations =
+    ctx.options.generate === "ssr"
+      ? ctx.ssrTemplates.slice(initialSsrTemplateCount).map(t => {
+          const literal =
+            t.parts.length === 1
+              ? JSON.stringify(t.parts[0]!)
+              : `[${t.parts.map(p => JSON.stringify(p)).join(", ")}]`;
+          return `var ${t.id} = ${literal};`;
+        })
+      : ctx.templates.slice(initialDomTemplateCount).map(t => {
+          const templateFn = h(ctx, "template");
+          const templateCall = t.isSVG
+            ? `${templateFn}(\`${escapeTemplate(t.html)}\`, ${t.isSVG ? "2" : "0"})`
+            : `${templateFn}(\`${escapeTemplate(t.html)}\`)`;
+          // In dev mode, add a comment with the template content for easier debugging
+          const devComment =
+            ctx.options.dev ? ` /* ${t.html.slice(0, 50)}${t.html.length > 50 ? "..." : ""} */` : "";
+          return `const ${t.id} = /*#__PURE__*/${templateCall};${devComment}`;
+        });
 
   return {
     code: result.code,
@@ -115,7 +257,8 @@ export function generateSolidCodeWithContext(
 
 function generateElement(jsx: ParsedJSX, ctx: GeneratorContext): GeneratedElement {
   if (ctx.options.generate === "ssr") {
-    return generateElementSSR(jsx, ctx);
+    // Nested SSR generation defaults to non-top-level. Top-level is handled by generateSolidCode*.
+    return generateElementSSR(jsx, ctx, false);
   }
 
   // Handle fragments
@@ -147,15 +290,15 @@ function generateFragment(jsx: ParsedJSX, ctx: GeneratorContext): GeneratedEleme
   return { code, isStatic: childResults.every(r => r.isStatic) };
 }
 
-function generateFragmentSSR(jsx: ParsedJSX, ctx: GeneratorContext): GeneratedElement {
+function generateFragmentSSR(jsx: ParsedJSX, ctx: GeneratorContext, topLevel: boolean): GeneratedElement {
   if (jsx.children.length === 0) return { code: '""', isStatic: true };
 
   if (jsx.children.length === 1) {
-    return generateSSRChild(jsx.children[0]!, ctx);
+    return generateSSRChild(jsx.children[0]!, ctx, topLevel);
   }
 
-  const childCodes = jsx.children.map(child => generateSSRChild(child, ctx).code);
-  const code = childCodes.join(" + ");
+  const childCodes = jsx.children.map(child => generateSSRChild(child, ctx, topLevel).code);
+  const code = `[${childCodes.join(", ")}]`;
   return { code, isStatic: false };
 }
 
@@ -186,10 +329,10 @@ function generateComponent(jsx: ParsedJSX, ctx: GeneratorContext): GeneratedElem
   // Handle member expressions (e.g., Foo.Bar)
   const componentRef = tag;
 
-  ctx.imports.add("createComponent");
+  const createComponentFn = h(ctx, "createComponent");
   // In dev mode, add a comment with the component name for easier debugging
   const devComment = ctx.options.dev ? ` /* <${tag}> */` : "";
-  const code = `_$createComponent(${componentRef}, ${propsCode})${devComment}`;
+  const code = `${createComponentFn}(${componentRef}, ${propsCode})${devComment}`;
 
   return { code, isStatic: false };
 }
@@ -205,10 +348,10 @@ function generateComponentSSR(jsx: ParsedJSX, ctx: GeneratorContext): GeneratedE
   }
 
   const propsCode = generatePropsObjectSSR(props, children, ctx);
-  ctx.imports.add("createComponent");
+  const createComponentFn = h(ctx, "createComponent");
   // In dev mode, add a comment with the component name for easier debugging
   const devComment = ctx.options.dev ? ` /* <${tag}> */` : "";
-  return { code: `_$createComponent(${tag}, ${propsCode})${devComment}`, isStatic: false };
+  return { code: `${createComponentFn}(${tag}, ${propsCode})${devComment}`, isStatic: false };
 }
 
 function generateBuiltInComponent(jsx: ParsedJSX, ctx: GeneratorContext): GeneratedElement {
@@ -264,23 +407,22 @@ function generateDOMElement(jsx: ParsedJSX, ctx: GeneratorContext): GeneratedEle
   });
 }
 
-function generateElementSSR(jsx: ParsedJSX, ctx: GeneratorContext): GeneratedElement {
+function generateElementSSR(jsx: ParsedJSX, ctx: GeneratorContext, topLevel: boolean): GeneratedElement {
   if (jsx.type === "fragment") {
-    return generateFragmentSSR(jsx, ctx);
+    return generateFragmentSSR(jsx, ctx, topLevel);
   }
 
   if (jsx.type === "component") {
     return generateComponentSSR(jsx, ctx);
   }
 
-  return generateDOMElementSSR(jsx, ctx);
+  return generateDOMElementSSR(jsx, ctx, topLevel);
 }
 
 function generateStaticElement(jsx: ParsedJSX, ctx: GeneratorContext): GeneratedElement {
   // Generate static HTML
   const html = generateStaticHTML(jsx, ctx.options);
-  const index = ctx.templateCounter++;
-  const templateId = index === 0 ? "_tmpl$" : `_tmpl$${index + 1}`;
+  const templateId = allocTemplateId(ctx);
 
   ctx.templates.push({
     id: templateId,
@@ -289,10 +431,10 @@ function generateStaticElement(jsx: ParsedJSX, ctx: GeneratorContext): Generated
     hasCustomElement: jsx.tag.includes("-")
   });
 
-  ctx.imports.add("template");
+  h(ctx, "template");
  
   return {
-    code: `${templateId}()`,
+    code: ctx.options.hydratable ? `${h(ctx, "getNextElement")}(${templateId})` : `${templateId}()`,
     isStatic: true
   };
 }
@@ -317,8 +459,7 @@ function generateDynamicElement(
   // If a child-replacing prop is present, don't include children in template (no placeholders)
   const templateChildren = hasChildReplacingProp ? [] : children;
   const templateHTML = generateTemplateHTML(tag, staticProps, templateChildren, ctx.options);
-  const index = ctx.templateCounter++;
-  const templateId = index === 0 ? "_tmpl$" : `_tmpl$${index + 1}`;
+  const templateId = allocTemplateId(ctx);
 
   ctx.templates.push({
     id: templateId,
@@ -327,27 +468,28 @@ function generateDynamicElement(
     hasCustomElement: tag.includes("-")
   });
 
-  ctx.imports.add("template");
+  h(ctx, "template");
 
   // Generate IIFE for element setup
-  const varName = `_el$${ctx.varCounter++}`;
+  const varName = allocVar(ctx, "_el$");
   const statements: string[] = [];
 
-  statements.push(`const ${varName} = ${templateId}();`);
+  statements.push(
+    `const ${varName} = ${ctx.options.hydratable ? `${h(ctx, "getNextElement")}(${templateId})` : `${templateId}()`};`
+  );
 
   // Set context on custom elements and slots for Web Component interop
   const isCustomElement = tag.includes("-") || tag === "slot";
   if (ctx.options.contextToCustomElements && isCustomElement) {
-    ctx.imports.add("getOwner");
-    statements.push(`${varName}._$owner = _$getOwner();`);
+    statements.push(`${varName}._$owner = ${h(ctx, "getOwner")}();`);
   }
 
   // Handle spread props first (they can override everything)
   if (spreadProps.length > 0) {
-    ctx.imports.add("spread");
+    const spreadFn = h(ctx, "spread");
     for (const prop of spreadProps) {
       if (prop.value.type === "spread") {
-        statements.push(`_$spread(${varName}, ${prop.value.value}, ${isSVG});`);
+        statements.push(`${spreadFn}(${varName}, ${prop.value.value}, ${isSVG});`);
       }
     }
   }
@@ -390,20 +532,14 @@ function generateDynamicElement(
 
   // Handle ref
   if (refProp && refProp.value.type === "expression") {
-    const refExpr = refProp.value.value;
-    // Check if it's a function ref or direct assignment
-    if (refExpr.includes("=>") || refExpr.startsWith("(")) {
-      statements.push(`(${refExpr})(${varName});`);
-    } else {
-      statements.push(
-        `typeof ${refExpr} === "function" ? ${refExpr}(${varName}) : ${refExpr} = ${varName};`
-      );
+    for (const stmt of generateRefStatements(refProp.value.value, varName, ctx)) {
+      statements.push(stmt);
     }
   }
 
   // Handle all dynamic expression inserts (including nested ones)
-  for (const { refVar, expr } of expressionInserts) {
-    const insertCode = generateDynamicChildInsertFromExpr(refVar, expr, ctx);
+  for (const insert of expressionInserts) {
+    const insertCode = generateDynamicChildInsertFromExpr(varName, insert, ctx);
     if (insertCode) {
       statements.push(insertCode);
     }
@@ -489,73 +625,561 @@ function generateTemplateHTML(
   children: ParsedChild[],
   options: ResolvedGasOptions
  ): string {
-
-  let html = `<${tag}`;
-
-  // Add static attributes
-  for (const prop of staticProps) {
-    const { name, value } = prop;
-    if (value.type === "string") {
-      const escaped = escapeAttr(value.value);
-      html += formatAttribute(name, escaped, options.omitQuotes);
-    } else if (value.type === "true") {
-      html += ` ${name}`;
-    }
-  }
-
-  html += ">";
-
-  // Add children - include placeholder markers for expressions
-  for (const child of children) {
-    if (child.type === "text") {
-      html += escapeHTML(child.value);
-    } else if (child.type === "element") {
-      // Static nested elements are fully inlined, dynamic ones use placeholders
-      if (isStaticJSX(child.value)) {
-        html += generateHTMLWithPlaceholders(child.value, true, options, true);
-      } else {
-        html += "<!>";
-      }
-    } else if (child.type === "expression") {
-      // Add placeholder comment node for dynamic expression insertion
-      html += "<!>";
-    }
-  }
-
-  // Always add closing tag for non-void elements in DOM mode
-  // The omitLastClosingTag optimization only applies to SSR string output
-  if (!isVoidElement(tag)) {
-    html += `</${tag}>`;
-  }
-
-  return html;
+  const jsx: ParsedJSX = {
+    type: "element",
+    tag,
+    props: staticProps,
+    children,
+    start: 0,
+    end: 0,
+    selfClosing: false,
+    isSVG: false
+  };
+  return generateHTMLWithPlaceholders(jsx, true, options, { lastNode: true });
 }
 
-function generateDOMElementSSR(jsx: ParsedJSX, ctx: GeneratorContext): GeneratedElement {
+type SsrTemplateBuild = { parts: string[]; values: string[] };
+
+function ssrAppend(build: SsrTemplateBuild, text: string): void {
+  build.parts[build.parts.length - 1] += text;
+}
+
+function ssrPushValue(build: SsrTemplateBuild, valueExpr: string): void {
+  build.values.push(valueExpr);
+  build.parts.push("");
+}
+
+function ssrMerge(build: SsrTemplateBuild, child: SsrTemplateBuild): void {
+  ssrAppend(build, child.parts[0] ?? "");
+  for (let i = 0; i < child.values.length; i++) {
+    ssrPushValue(build, child.values[i]!);
+    ssrAppend(build, child.parts[i + 1] ?? "");
+  }
+}
+
+const SSR_ALIASES: Record<string, string> = {
+  className: "class",
+  htmlFor: "for"
+};
+
+function stripSsrNamespace(name: string): string {
+  const parts = name.split(":");
+  if (parts.length !== 2) return name;
+  const [prefix, local] = parts;
+  if (!prefix || !local) return name;
+  // dom-expressions strips reserved namespaces (xlink/xml/xmlns) for now in SSR.
+  return NAMESPACE_URIS[prefix] ? local : name;
+}
+
+function toSsrAttributeName(name: string, isSVG: boolean): string {
+  const aliased = SSR_ALIASES[name] ?? name;
+  return isSVG ? aliased : aliased.toLowerCase();
+}
+
+function ssrEscapeAttr(expr: string, ctx: GeneratorContext): string {
+  const escapeFn = h(ctx, "escape");
+  return `${escapeFn}(${expr}, true)`;
+}
+
+function buildSsrStyleObjectLiteral(exprText: string, ctx: GeneratorContext): string | null {
+  const parsed = parseExpressionForAnalysis(exprText);
+  if (!parsed) return null;
+  const { sf, expr } = parsed;
+  if (!ts.isObjectLiteralExpression(expr)) return null;
+
+  const ssrStylePropertyFn = h(ctx, "ssrStyleProperty");
+  const parts: string[] = [];
+  let pendingStatic = "";
+  let hasAny = false;
+
+  const flushStatic = () => {
+    if (!pendingStatic) return;
+    parts.push(JSON.stringify(escapeAttr(pendingStatic)));
+    pendingStatic = "";
+    hasAny = true;
+  };
+
+  for (const prop of expr.properties) {
+    if (!ts.isPropertyAssignment(prop)) return null;
+    if (prop.name && (ts.isComputedPropertyName(prop.name) || ts.isPrivateIdentifier(prop.name))) return null;
+
+    let key: string | null = null;
+    if (ts.isIdentifier(prop.name)) key = prop.name.text;
+    else if (ts.isStringLiteralLike(prop.name)) key = prop.name.text;
+    else if (ts.isNumericLiteral(prop.name)) key = prop.name.text;
+    else return null;
+
+    const init = prop.initializer;
+    const prefix = hasAny || pendingStatic ? ";" : "";
+
+    if (ts.isStringLiteralLike(init)) {
+      pendingStatic += `${prefix}${key}:${init.text}`;
+      continue;
+    }
+    if (ts.isNumericLiteral(init)) {
+      pendingStatic += `${prefix}${key}:${init.text}`;
+      continue;
+    }
+
+    flushStatic();
+    const valueExpr = printExpression(init, sf);
+    parts.push(`${ssrStylePropertyFn}(${JSON.stringify(`${prefix}${key}:`)}, ${ssrEscapeAttr(valueExpr, ctx)})`);
+    hasAny = true;
+  }
+
+  flushStatic();
+  if (parts.length === 0) return JSON.stringify("");
+  return parts.join(" + ");
+}
+
+function getOrCreateSsrTemplateId(ctx: GeneratorContext, parts: string[]): string {
+  const key = parts.join("\u0000");
+  const existing = ctx.ssrTemplateCache.get(key);
+  if (existing) return existing;
+  const id = allocTemplateId(ctx);
+  ctx.ssrTemplates.push({ id, parts });
+  ctx.ssrTemplateCache.set(key, id);
+  return id;
+}
+
+function meaningfulChildCount(children: ParsedChild[]): number {
+  let count = 0;
+  for (const child of children) {
+    if (child.type === "text") {
+      if (child.value.trim().length) count++;
+      continue;
+    }
+    // expressions and elements count
+    count++;
+  }
+  return count;
+}
+
+function filterSsrChildren(children: ParsedChild[]): ParsedChild[] {
+  return children.filter(child => {
+    if (child.type !== "text") return true;
+    const raw = child.value.replace(/\r/g, "");
+    // dom-expressions filterChildren removes JSXText nodes that are just a newline + indentation.
+    // Keep spaces-only nodes because they are meaningful for SSR output.
+    return !/^[\r\n]\s*$/.test(raw);
+  });
+}
+
+function ssrHasMultipleChildren(children: ParsedChild[]): boolean {
+  // dom-expressions checkLength: count "meaningful" children with special handling
+  // for whitespace-only text nodes:
+  // - ignore whitespace-only text that includes newlines
+  // - count spaces-only nodes
+  let i = 0;
+  for (const child of children) {
+    if (child.type === "text") {
+      const raw = child.value.replace(/\r/g, "");
+      const whitespaceOnly = /^\s*$/.test(raw);
+      const spacesOnly = /^ *$/.test(raw);
+      if (!whitespaceOnly || spacesOnly) i++;
+    } else {
+      i++;
+    }
+    if (i > 1) return true;
+  }
+  return false;
+}
+
+function buildSsrTemplateForJsx(
+  jsx: ParsedJSX,
+  ctx: GeneratorContext,
+  info: { topLevel: boolean; inSVG: boolean }
+): SsrTemplateBuild | null {
+  // Components cannot be inlined into a static template; insert them as dynamic nodes.
+  if (jsx.type === "component") {
+    const escapeFn = h(ctx, "escape");
+    const componentExpr = generateComponentSSR(jsx, ctx).code;
+    return { parts: ["", ""], values: [`${escapeFn}(${componentExpr})`] };
+  }
+
+  if (jsx.type === "fragment") {
+    const build: SsrTemplateBuild = { parts: [""], values: [] };
+    const filtered = filterSsrChildren(jsx.children);
+    const markers = ctx.options.hydratable && ssrHasMultipleChildren(filtered);
+    for (const child of filtered) {
+      const childBuild = buildSsrTemplateForChild(
+        child,
+        ctx,
+        { ...info, topLevel: false },
+        { markers, doNotEscape: false }
+      );
+      if (childBuild) ssrMerge(build, childBuild);
+    }
+    return build;
+  }
+
+  // Element
   const { tag, props, children } = jsx;
-  ctx.imports.add("ssrElement");
-  if (ctx.options.hydratable) ctx.imports.add("ssrHydrationKey");
+  const isSVG = info.inSVG || jsx.isSVG;
+  const tagLower = tag.toLowerCase();
 
+  // Spread props are handled via ssrElement fallback (dom-expressions uses ssrElement for spreads).
+  if (props.some(p => p.value.type === "spread")) return null;
+
+  const hasClassList = props.some(p => stripSsrNamespace(p.name) === "classList" && p.value.type === "expression");
+  // If classList is combined with a dynamic class/className expression, fall back to ssrElement runtime
+  // to avoid emitting duplicate class attributes.
+  if (
+    hasClassList &&
+    props.some(p => {
+      const n = stripSsrNamespace(p.name);
+      return (n === "class" || n === "className") && p.value.type === "expression";
+    })
+  ) {
+    return null;
+  }
+
+  const build: SsrTemplateBuild = { parts: [`<${tag}`], values: [] };
+
+  // doNotEscape parity:
+  // - <script>/<style> do not escape inserted expressions/text
+  // - innerHTML child property do not escape
+  const isRawTextTag = tagLower === "script" || tagLower === "style";
+  let doNotEscapeChildren = isRawTextTag;
+
+  // Child-replacing prop parity (innerHTML/textContent/innerText/children)
+  // Note: we avoid emitting these as attributes; instead we treat them as children.
+  let childProp: ParsedProp | null = null;
+  let childPropName: string | null = null;
+  for (const prop of props) {
+    const strippedName = stripSsrNamespace(prop.name);
+    if (
+      strippedName === "innerHTML" ||
+      strippedName === "textContent" ||
+      strippedName === "innerText" ||
+      strippedName === "children"
+    ) {
+      childProp = prop;
+      childPropName = strippedName;
+      if (strippedName === "innerHTML") doNotEscapeChildren = true;
+      break;
+    }
+  }
+
+  if (info.topLevel && ctx.options.hydratable && tagLower !== "head") {
+    const hk = h(ctx, "ssrHydrationKey");
+    ssrPushValue(build, `${hk}()`);
+  }
+
+  // Attributes
+  let mergedStaticClass = "";
+  let classListExpr: string | null = null;
+  for (const prop of props) {
+    const { name, value } = prop;
+    const strippedName = stripSsrNamespace(name);
+
+    // Skip server-irrelevant props
+    if (
+      strippedName === "ref" ||
+      strippedName.startsWith("on") ||
+      strippedName.startsWith("use:") ||
+      strippedName.startsWith("prop:")
+    )
+      continue;
+
+    // ChildProperties: handled after the opening tag.
+    if (
+      strippedName === "innerHTML" ||
+      strippedName === "textContent" ||
+      strippedName === "innerText" ||
+      strippedName === "children"
+    ) {
+      continue;
+    }
+
+    const attrName = toSsrAttributeName(strippedName, isSVG);
+    const lower = attrName.toLowerCase();
+
+    if (value.type === "true") {
+      ssrAppend(build, ` ${lower}`);
+      continue;
+    }
+
+    if (value.type === "string") {
+      // dom-expressions SSR always emits quoted static string attribute values.
+      // Special-cases empty strings as bare attributes (no ="").
+      const raw = value.value;
+      const nameForSsr = toSsrAttributeName(strippedName, isSVG);
+      if (nameForSsr === "class" && hasClassList) {
+        let text = raw;
+        text = text.replace(/\r/g, "");
+        if (/\n/g.test(text)) {
+          text = text
+            .split("\n")
+            .map((t, i) => (i ? t.replace(/^\s*/g, "") : t))
+            .filter(s => !/^\s*$/.test(s))
+            .join(" ");
+        }
+        text = text.replace(/\s+/g, " ");
+        if (text) mergedStaticClass += (mergedStaticClass ? " " : "") + text;
+        continue;
+      }
+      ssrAppend(build, ` ${nameForSsr}`);
+      if (raw !== "") {
+        let text = raw;
+        // Normalize static class/style values similarly to dom-expressions.
+        if (nameForSsr === "class" || nameForSsr === "style") {
+          text = text.replace(/\r/g, "");
+          if (/\n/g.test(text)) {
+            text = text
+              .split("\n")
+              .map((t, i) => (i ? t.replace(/^\s*/g, "") : t))
+              .filter(s => !/^\s*$/.test(s))
+              .join(" ");
+          }
+          text = text.replace(/\s+/g, " ");
+          if (nameForSsr === "style") {
+            text = text.replace(/; /g, ";").replace(/: /g, ":");
+          }
+        }
+        ssrAppend(build, `="${escapeAttr(text)}"`);
+      }
+      continue;
+    }
+
+    if (value.type === "expression") {
+      const ssrAttributeFn = h(ctx, "ssrAttribute");
+      const expr = rewriteNestedJSX(value.value, ctx);
+
+      // Special SSR props/namespace prefixes (dom-expressions parity)
+      if (strippedName === "classList") {
+        classListExpr = expr;
+        continue;
+      }
+      if (strippedName === "style") {
+        const built = buildSsrStyleObjectLiteral(expr, ctx);
+        if (built) {
+          ssrPushValue(build, `${ssrAttributeFn}("style", ${built}, false)`);
+        } else {
+          const ssrStyleFn = h(ctx, "ssrStyle");
+          ssrPushValue(build, `${ssrAttributeFn}("style", ${ssrStyleFn}(${expr}), false)`);
+        }
+        continue;
+      }
+
+      let effectiveName = lower;
+      let forcedBoolean = false;
+      if (effectiveName.startsWith("attr:")) {
+        effectiveName = stripSsrNamespace(effectiveName.slice(5));
+      } else if (effectiveName.startsWith("bool:")) {
+        effectiveName = stripSsrNamespace(effectiveName.slice(5));
+        forcedBoolean = true;
+      }
+
+      const isBoolean = forcedBoolean || BOOLEAN_ATTRS.has(effectiveName);
+      const valueExpr = isBoolean ? expr : ssrEscapeAttr(expr, ctx);
+      ssrPushValue(
+        build,
+        `${ssrAttributeFn}(${JSON.stringify(effectiveName)}, ${valueExpr}, ${isBoolean ? "true" : "false"})`
+      );
+      continue;
+    }
+
+    if (value.type === "element") {
+      // JSX values become nodes; serialize via escape() to allow SSR nodes/strings safely.
+      const escapeFn = h(ctx, "escape");
+      const nodeExpr = generateElement(value.value, ctx).code;
+      ssrPushValue(build, `${escapeFn}(${nodeExpr})`);
+      continue;
+    }
+  }
+
+  // Merge class + classList into a single class attribute (dom-expressions parity).
+  if (classListExpr) {
+    const ssrAttributeFn = h(ctx, "ssrAttribute");
+    const ssrClassListFn = h(ctx, "ssrClassList");
+    const base = mergedStaticClass ? `${escapeAttr(mergedStaticClass)} ` : "";
+    const mergedExpr = base ? `${JSON.stringify(base)} + ${ssrClassListFn}(${classListExpr})` : `${ssrClassListFn}(${classListExpr})`;
+    ssrPushValue(build, `${ssrAttributeFn}("class", ${mergedExpr}, false)`);
+  }
+
+  // Void/self-closing handling: dom-expressions emits `>` (not `/>`) for void tags in SSR templates.
+  ssrAppend(build, ">");
+  const voidTag = isVoidElement(tag.toLowerCase());
+  if (!voidTag) {
+    const filteredChildren = filterSsrChildren(children);
+    const markers = ctx.options.hydratable && ssrHasMultipleChildren(filteredChildren);
+
+    if (childProp && childPropName) {
+      const value = childProp.value;
+      if (value.type === "string") {
+        // innerHTML uses raw string; other child props behave like text nodes (escaped).
+        ssrAppend(build, doNotEscapeChildren ? value.value : escapeHTML(value.value));
+      } else if (value.type === "true") {
+        // children={true} isn't meaningful; ignore.
+      } else if (value.type === "expression") {
+        const expr = rewriteNestedJSX(value.value, ctx);
+        // hydratable SSR parity: textContent expression coerces to at least one whitespace.
+        const normalized =
+          ctx.options.hydratable && childPropName === "textContent" ? `(${expr} || " ")` : expr;
+        const valueExpr = doNotEscapeChildren ? normalized : `${h(ctx, "escape")}(${normalized})`;
+        if (markers && !doNotEscapeChildren) {
+          ssrAppend(build, "<!--$-->");
+          ssrPushValue(build, valueExpr);
+          ssrAppend(build, "<!--/-->");
+        } else {
+          ssrPushValue(build, valueExpr);
+        }
+      } else if (value.type === "element") {
+        const nodeExpr = generateElement(value.value, ctx).code;
+        const valueExpr = doNotEscapeChildren ? nodeExpr : `${h(ctx, "escape")}(${nodeExpr})`;
+        if (markers && !doNotEscapeChildren) {
+          ssrAppend(build, "<!--$-->");
+          ssrPushValue(build, valueExpr);
+          ssrAppend(build, "<!--/-->");
+        } else {
+          ssrPushValue(build, valueExpr);
+        }
+      } else if (value.type === "spread") {
+        return null;
+      }
+    } else {
+      for (const child of filteredChildren) {
+        const childBuild = buildSsrTemplateForChild(
+          child,
+          ctx,
+          { topLevel: false, inSVG: isSVG },
+          { markers, doNotEscape: doNotEscapeChildren }
+        );
+        if (childBuild) ssrMerge(build, childBuild);
+      }
+    }
+    ssrAppend(build, `</${tag}>`);
+  }
+
+  return build;
+}
+
+function buildSsrTemplateForChild(
+  child: ParsedChild,
+  ctx: GeneratorContext,
+  info: { topLevel: boolean; inSVG: boolean },
+  opts: { markers: boolean; doNotEscape: boolean }
+): SsrTemplateBuild | null {
+  if (child.type === "text") {
+    if (child.value.length === 0) return { parts: [""], values: [] };
+    return { parts: [opts.doNotEscape ? child.value : escapeHTML(child.value)], values: [] };
+  }
+
+  if (child.type === "expression") {
+    const expr = rewriteNestedJSX(child.value, ctx);
+    const valueExpr = opts.doNotEscape ? expr : `${h(ctx, "escape")}(${expr})`;
+    if (opts.markers && !opts.doNotEscape) {
+      return { parts: ["<!--$-->", "<!--/-->"], values: [valueExpr] };
+    }
+    return { parts: ["", ""], values: [valueExpr] };
+  }
+
+  if (child.type === "element") {
+    const jsx = child.value;
+    if (jsx.type === "component") {
+      const componentExpr = generateComponentSSR(jsx, ctx).code;
+      const valueExpr = opts.doNotEscape ? componentExpr : `${h(ctx, "escape")}(${componentExpr})`;
+      if (opts.markers && !opts.doNotEscape) return { parts: ["<!--$-->", "<!--/-->"], values: [valueExpr] };
+      return { parts: ["", ""], values: [valueExpr] };
+    }
+    const built = buildSsrTemplateForJsx(jsx, ctx, info);
+    if (built) return built;
+    // Spread child element fallback: insert the ssrElement node as a value.
+    const nodeExpr = generateElementSSR(jsx, ctx, false).code;
+    const valueExpr = opts.doNotEscape ? nodeExpr : `${h(ctx, "escape")}(${nodeExpr})`;
+    if (opts.markers && !opts.doNotEscape) return { parts: ["<!--$-->", "<!--/-->"], values: [valueExpr] };
+    return { parts: ["", ""], values: [valueExpr] };
+  }
+
+  return null;
+}
+
+function generateDOMElementSSR(jsx: ParsedJSX, ctx: GeneratorContext, topLevel: boolean): GeneratedElement {
+  const { tag, props, children } = jsx;
+
+  // dom-expressions parity: in hydratable SSR, top-level <head> is wrapped in NoHydration
+  // so it doesn't participate in hydration.
+  if (topLevel && ctx.options.hydratable && tag.toLowerCase() === "head") {
+    const createComponentFn = h(ctx, "createComponent");
+    const noHydration = h(ctx, "NoHydration");
+    const child = generateDOMElementSSR(jsx, ctx, false).code;
+    return {
+      code: `${createComponentFn}(${noHydration}, { get children() { return ${child}; } })`,
+      isStatic: false
+    };
+  }
+
+  // Prefer SSR templates + ssr() calls when there are no spreads, to match dom-expressions output.
+  const templated = buildSsrTemplateForJsx(jsx, ctx, { topLevel, inSVG: false });
+  if (templated) {
+    const templateId = getOrCreateSsrTemplateId(ctx, templated.parts);
+    // dom-expressions parity: if the only dynamic value is ssrHydrationKey(), avoid an ssr() call.
+    const hkCall = `${h(ctx, "ssrHydrationKey")}()`;
+    if (templated.values.length === 1 && templated.values[0] === hkCall) {
+      return { code: `${templateId}[0] + ${hkCall} + ${templateId}[1]`, isStatic: false };
+    }
+
+    const ssrFn = h(ctx, "ssr");
+    const args = templated.values.length ? `, ${templated.values.join(", ")}` : "";
+    return { code: `${ssrFn}(${templateId}${args})`, isStatic: false };
+  }
+
+  const ssrElementFn = h(ctx, "ssrElement");
   const propsExpr = buildSSRProps(tag, props, ctx);
-  const childCodes = children.map(child => generateSSRChild(child, ctx).code);
-  const childrenExpr = childCodes.length === 0 ? '""' : childCodes.join(" + ");
-  const needsId = ctx.options.hydratable ? "true" : "false";
+  const childNodes: string[] = [];
+  for (const child of children) {
+    if (child.type === "text") {
+      childNodes.push(JSON.stringify(child.value));
+      continue;
+    }
+    if (child.type === "expression") {
+      // For hydratable SSR output, surround dynamic insertions with markers so the client
+      // can locate them via getNextMarker (dom-expressions behavior).
+      if (ctx.options.hydratable) {
+        childNodes.push("\"<!--$-->\"");
+      }
+      const escapeFn = h(ctx, "escape");
+      childNodes.push(`${escapeFn}(${rewriteNestedJSX(child.value, ctx)})`);
+      if (ctx.options.hydratable) {
+        childNodes.push("\"<!--/-->\"");
+      }
+      continue;
+    }
+    if (child.type === "element") {
+      childNodes.push(generateElementSSR(child.value, ctx, false).code);
+      continue;
+    }
+  }
 
-  const code = `_$ssrElement(${JSON.stringify(tag)}, ${propsExpr}, ${childrenExpr}, ${needsId})`;
+  let childrenExpr: string;
+  if (childNodes.length === 0) {
+    childrenExpr = "undefined";
+  } else if (childNodes.length === 1) {
+    childrenExpr = childNodes[0]!;
+  } else {
+    childrenExpr = `[${childNodes.join(", ")}]`;
+  }
+
+  const childrenArg =
+    childNodes.length === 0 ? "undefined" : ctx.options.hydratable ? `() => ${childrenExpr}` : childrenExpr;
+  const needsId = ctx.options.hydratable && topLevel ? "true" : "false";
+
+  const code = `${ssrElementFn}(${JSON.stringify(tag)}, ${propsExpr}, ${childrenArg}, ${needsId})`;
   return { code, isStatic: false };
 }
 
-function generateSSRChild(child: ParsedChild, ctx: GeneratorContext): GeneratedElement {
+function generateSSRChild(child: ParsedChild, ctx: GeneratorContext, topLevel: boolean): GeneratedElement {
   if (child.type === "text") {
     const text = child.value;
     return { code: JSON.stringify(text), isStatic: true };
   }
   if (child.type === "expression") {
-    ctx.imports.add("escape");
-    return { code: `_$escape(${child.value})`, isStatic: false };
+    const escapeFn = h(ctx, "escape");
+    return { code: `${escapeFn}(${child.value})`, isStatic: false };
   }
   if (child.type === "element") {
-    return generateElementSSR(child.value, ctx);
+    return generateElementSSR(child.value, ctx, topLevel);
   }
   return { code: '""', isStatic: true };
 }
@@ -564,91 +1188,39 @@ function buildSSRProps(tag: string, props: ParsedProp[], ctx: GeneratorContext):
   const spreads: string[] = [];
   const regular: string[] = [];
 
+  // Solid's SSR runtime (`solid-js/web` server build) expects an object of props.
+  // It handles class/className/classList merging, style (string|object), boolean attrs,
+  // and children-replacing props like innerHTML internally.
   for (const prop of props) {
     const { name, value } = prop;
     const lowerName = name.toLowerCase();
+    const keyName = BOOLEAN_ATTRS.has(lowerName) ? lowerName : name;
 
     if (value.type === "spread") {
       spreads.push(value.value);
       continue;
     }
 
-    if (name === "classList") {
-      ctx.imports.add("ssrClassList");
-      if (value.type === "expression") {
-        regular.push(`"class": _$ssrClassList(${value.value})`);
-      } else if (value.type === "string") {
-        regular.push(`"class": ${JSON.stringify(value.value)}`);
-      }
-      continue;
-    }
-
-    if (name === "class" || name === "className") {
-      if (value.type === "expression") {
-        ctx.imports.add("ssrClassList");
-        regular.push(`"class": _$ssrClassList(${value.value})`);
-      } else if (value.type === "string") {
-        regular.push(`"class": ${JSON.stringify(value.value)}`);
-      }
-      continue;
-    }
-
-    if (name === "style") {
-      ctx.imports.add("ssrStyle");
-      if (value.type === "expression") {
-        regular.push(`"style": _$ssrStyle(${value.value})`);
-      } else if (value.type === "string") {
-        regular.push(`"style": ${JSON.stringify(value.value)}`);
-      }
-      continue;
-    }
-
-    if (name === "innerHTML") {
-      if (value.type === "expression") {
-        regular.push(`"innerHTML": ${value.value}`);
-      } else if (value.type === "string") {
-        regular.push(`"innerHTML": ${JSON.stringify(value.value)}`);
-      }
-      continue;
-    }
-
-    const isBooleanAttr = BOOLEAN_ATTRS.has(lowerName);
-
     if (value.type === "true") {
-      if (isBooleanAttr) {
-        ctx.imports.add("ssrAttribute");
-        regular.push(`"${lowerName}": _$ssrAttribute(${JSON.stringify(lowerName)}, true)`);
-      } else {
-        regular.push(`"${name}": ""`);
-      }
+      regular.push(`${JSON.stringify(keyName)}: true`);
       continue;
     }
 
     if (value.type === "string") {
-      regular.push(`${JSON.stringify(name)}: ${JSON.stringify(value.value)}`);
+      regular.push(`${JSON.stringify(keyName)}: ${JSON.stringify(value.value)}`);
       continue;
     }
 
     if (value.type === "element") {
       const generated = generateElement(value.value, ctx);
-      regular.push(`${JSON.stringify(name)}: ${generated.code}`);
+      regular.push(`${JSON.stringify(keyName)}: ${generated.code}`);
       continue;
     }
 
     if (value.type === "expression") {
       const expr = rewriteNestedJSX(value.value, ctx);
-      if (isBooleanAttr) {
-        ctx.imports.add("ssrAttribute");
-        regular.push(`"${lowerName}": _$ssrAttribute(${JSON.stringify(lowerName)}, ${expr})`);
-      } else {
-        regular.push(`${JSON.stringify(name)}: ${expr}`);
-      }
+      regular.push(`${JSON.stringify(keyName)}: ${expr}`);
     }
-  }
-
-  if (ctx.options.hydratable) {
-    ctx.imports.add("ssrHydrationKey");
-    regular.push(`"data-hk": _$ssrHydrationKey()`);
   }
 
   const hasSpread = spreads.length > 0;
@@ -657,48 +1229,72 @@ function buildSSRProps(tag: string, props: ParsedProp[], ctx: GeneratorContext):
   if (!hasSpread && !hasRegular) return "{}";
 
   if (hasSpread) {
-    // In SSR mode, use ssrSpread for spread props
-    ctx.imports.add("ssrSpread");
-    if (hasRegular) {
-      // Merge spread props with regular props using ssrSpread
-      const spreadMerge = spreads.length === 1
-        ? `_$ssrSpread(${spreads[0]})`
-        : spreads.map(s => `_$ssrSpread(${s})`).join(" + ");
-      return `Object.assign({}, ${spreadMerge}, { ${regular.join(", ")} })`;
+    const mergePropsFn = h(ctx, "mergeProps");
+    if (!hasRegular) {
+      return spreads.length === 1 ? spreads[0]! : `${mergePropsFn}(${spreads.join(", ")})`;
     }
-    if (spreads.length === 1) {
-      return `_$ssrSpread(${spreads[0]})`;
-    }
-    return spreads.map(s => `_$ssrSpread(${s})`).join(" + ");
+    return `${mergePropsFn}(${spreads.join(", ")}, { ${regular.join(", ")} })`;
   }
 
   return `{ ${regular.join(", ")} }`;
 }
 
 function generateStaticHTML(jsx: ParsedJSX, options: ResolvedGasOptions): string {
-  return generateHTMLWithPlaceholders(jsx, false, options, false);
+  return generateHTMLWithPlaceholders(jsx, false, options, { lastNode: true });
 }
 
 function generateHTMLWithPlaceholders(
   jsx: ParsedJSX,
   includePlaceholders: boolean,
   options: ResolvedGasOptions,
-  hasParent: boolean
+  info: { lastNode: boolean; toBeClosed?: Set<string> }
 ): string {
   const { tag, props, children, selfClosing } = jsx;
 
-
   if (jsx.type === "fragment") {
-    return children
-      .map(child => {
-        if (child.type === "text") return escapeHTML(child.value);
-        if (child.type === "element") {
-          return generateHTMLWithPlaceholders(child.value, includePlaceholders, options, true);
+    const parts: string[] = [];
+    for (let i = 0; i < children.length; i++) {
+      const child = children[i]!;
+      if (child.type === "text") {
+        parts.push(escapeHTML(child.value));
+      } else if (child.type === "element") {
+        if (includePlaceholders && !isStaticJSX(child.value)) {
+          parts.push(options.hydratable ? "<!$><!/>" : "<!>");
+        } else {
+          parts.push(
+            generateHTMLWithPlaceholders(child.value, includePlaceholders, options, {
+              lastNode: i === children.length - 1,
+              toBeClosed: info.toBeClosed
+            })
+          );
         }
-        if (child.type === "expression" && includePlaceholders) return "<!>";
-        return "";
-      })
-      .join("");
+      } else if (child.type === "expression" && includePlaceholders) {
+        parts.push(options.hydratable ? "<!$><!/>" : "<!>");
+      }
+    }
+    return parts.join("");
+  }
+
+  const tagName = tag.toLowerCase();
+  const isVoid = isVoidElement(tagName);
+  const inheritedToBeClosed = info.toBeClosed;
+
+  // Determine whether we must include the closing tag for this element.
+  // Matches dom-expressions' omitLastClosingTag/omitNestedClosingTags behavior.
+  const shouldClose =
+    !isVoid &&
+    (!info.lastNode ||
+      !options.omitLastClosingTag ||
+      (inheritedToBeClosed &&
+        (!options.omitNestedClosingTags || inheritedToBeClosed.has(tagName))));
+
+  let nextToBeClosed: Set<string> | undefined = inheritedToBeClosed;
+  if (shouldClose) {
+    nextToBeClosed = new Set(inheritedToBeClosed ?? ALWAYS_CLOSE_TAGS);
+    nextToBeClosed.add(tagName);
+    if (INLINE_ELEMENTS.has(tagName)) {
+      for (const el of BLOCK_ELEMENTS) nextToBeClosed.add(el);
+    }
   }
 
   let html = `<${tag}`;
@@ -714,24 +1310,35 @@ function generateHTMLWithPlaceholders(
   }
 
   if (selfClosing) {
-    return html + "/>";
+    // Prefer HTML-style void tags (no "/>") for parity with dom-expressions.
+    html += ">";
+    if (!isVoid && shouldClose) {
+      html += `</${tag}>`;
+    }
+    return html;
   }
 
   html += ">";
  
-  for (const child of children) {
+  for (let i = 0; i < children.length; i++) {
+    const child = children[i]!;
     if (child.type === "text") {
       html += escapeHTML(child.value);
     } else if (child.type === "element") {
-      html += generateHTMLWithPlaceholders(child.value, includePlaceholders, options, true);
+      if (includePlaceholders && !isStaticJSX(child.value)) {
+        html += options.hydratable ? "<!$><!/>" : "<!>";
+      } else {
+        html += generateHTMLWithPlaceholders(child.value, includePlaceholders, options, {
+          lastNode: i === children.length - 1,
+          toBeClosed: nextToBeClosed
+        });
+      }
     } else if (child.type === "expression" && includePlaceholders) {
-      html += "<!>";
+      html += options.hydratable ? "<!$><!/>" : "<!>";
     }
   }
  
-  // Always add closing tags for DOM templates - browser HTML parser requires valid structure
-  // The omit* options only apply to SSR string output, but this function is only used for DOM templates
-  if (!isVoidElement(tag)) {
+  if (!isVoid && shouldClose) {
     html += `</${tag}>`;
   }
  
@@ -742,6 +1349,8 @@ function generateHTMLWithPlaceholders(
 interface ExpressionInsert {
   refVar: string;
   expr: string;
+  markerVar?: string;
+  currentVar?: string;
 }
 
 /**
@@ -766,7 +1375,61 @@ function generateChildReferencesAndExpressions(
 
   if (!needsRef) return expressionInserts;
 
-  // Generate references for dynamic children
+  // Generate references for dynamic children.
+  // In hydratable DOM mode we use <!$><!/> marker pairs and getNextMarker to capture the
+  // current hydrated nodes, matching dom-expressions output.
+  if (ctx.options.hydratable) {
+    const getNextMarkerFn = h(ctx, "getNextMarker");
+
+    const firstRef = allocVar(ctx, "_el$");
+    statements.push(`const ${firstRef} = ${rootVar}.firstChild;`);
+    let currentRef = firstRef;
+
+    for (let i = 0; i < children.length; i++) {
+      const child = children[i]!;
+      const isDynamicSlot =
+        child.type === "expression" || (child.type === "element" && !isStaticJSX(child.value));
+
+      if (isDynamicSlot) {
+        // currentRef points at the start marker (<!$>)
+        const markerVar = allocVar(ctx, "_el$");
+        const currentVar = allocVar(ctx, "_co$");
+        statements.push(`const [${markerVar}, ${currentVar}] = ${getNextMarkerFn}(${currentRef}.nextSibling);`);
+
+        const expr =
+          child.type === "expression"
+            ? child.value
+            : generateElement(child.value, ctx).code;
+
+        expressionInserts.push({
+          refVar: currentRef,
+          expr,
+          markerVar,
+          currentVar
+        });
+
+        // Advance to the next node after the end marker (<!/>)
+        if (i < children.length - 1) {
+          const nextRef = allocVar(ctx, "_el$");
+          statements.push(`const ${nextRef} = ${markerVar}.nextSibling;`);
+          currentRef = nextRef;
+        }
+
+        continue;
+      }
+
+      // Static node (text or element): advance to next sibling
+      if (i < children.length - 1) {
+        const nextRef = allocVar(ctx, "_el$");
+        statements.push(`const ${nextRef} = ${currentRef}.nextSibling;`);
+        currentRef = nextRef;
+      }
+    }
+
+    return expressionInserts;
+  }
+
+  // Non-hydratable DOM mode: uses <!> placeholders and direct sibling traversal.
   let currentRef = rootVar;
   let isFirst = true;
 
@@ -833,15 +1496,34 @@ function generateDynamicAttribute(
     expr = stripStaticMarker(expr, ctx.options);
   }
  
-  // Check if expression is potentially reactive (contains function calls)
-  const isPotentiallyReactive = !hasStatic && !isJSXValue && containsFunctionCall(expr);
+  // Check if expression is potentially reactive (dynamic per dom-expressions isDynamic)
+  const isPotentiallyReactive =
+    !hasStatic && !isJSXValue && isDynamicExpression(expr, ctx, { checkMember: true, checkCallExpressions: true });
+  const isHydratable = ctx.options.hydratable;
+  const ns = parseNamespacedAttr(name);
+
+  // Namespaced attributes (xlink/xml/xmlns) must be set via setAttributeNS for SVG/DOM parity.
+  if (ns) {
+    const setAttributeNS = h(ctx, "setAttributeNS");
+    if (isPotentiallyReactive) {
+      return wrapEffect(ctx, `${setAttributeNS}(${varName}, "${ns.namespaceUri}", "${ns.localName}", ${expr})`);
+    }
+    return `${setAttributeNS}(${varName}, "${ns.namespaceUri}", "${ns.localName}", ${expr});`;
+  }
  
  
   // Boolean attributes
   if (BOOLEAN_ATTRS.has(name.toLowerCase())) {
+    const lower = name.toLowerCase();
+    if (isHydratable) {
+      const setBool = h(ctx, "setBoolAttribute");
+      if (isPotentiallyReactive) {
+        return wrapEffect(ctx, `${setBool}(${varName}, "${lower}", ${expr})`);
+      }
+      return `${setBool}(${varName}, "${lower}", ${expr});`;
+    }
     if (isPotentiallyReactive) {
-      ctx.imports.add("effect");
-      return `_$effect(() => ${varName}.${name} = ${expr});`;
+      return wrapEffect(ctx, `${varName}.${name} = ${expr}`);
     }
     return `${varName}.${name} = ${expr};`;
   }
@@ -849,9 +1531,15 @@ function generateDynamicAttribute(
 
   // Property attributes
   if (PROPERTY_ATTRS.has(name)) {
+    if (isHydratable) {
+      const setProp = h(ctx, "setProperty");
+      if (isPotentiallyReactive) {
+        return wrapEffect(ctx, `${setProp}(${varName}, "${name}", ${expr})`);
+      }
+      return `${setProp}(${varName}, "${name}", ${expr});`;
+    }
     if (isPotentiallyReactive) {
-      ctx.imports.add("effect");
-      return `_$effect(() => ${varName}.${name} = ${expr});`;
+      return wrapEffect(ctx, `${varName}.${name} = ${expr}`);
     }
     return `${varName}.${name} = ${expr};`;
   }
@@ -860,33 +1548,57 @@ function generateDynamicAttribute(
   if (name === "class" || name === "className") {
     // SVG elements have read-only className property, must use setAttribute
     if (isSVG) {
+      if (isHydratable) {
+        const setAttr = h(ctx, "setAttribute");
+        if (isPotentiallyReactive) {
+          return wrapEffect(ctx, `${setAttr}(${varName}, "class", ${expr})`);
+        }
+        return `${setAttr}(${varName}, "class", ${expr});`;
+      }
       if (isPotentiallyReactive) {
-        ctx.imports.add("effect");
-        return `_$effect(() => ${varName}.setAttribute("class", ${expr}));`;
+        return wrapEffect(ctx, `${varName}.setAttribute("class", ${expr})`);
       }
       return `${varName}.setAttribute("class", ${expr});`;
     }
     // Regular HTML elements can use className property
+    if (isHydratable) {
+      const classNameFn = h(ctx, "className");
+      if (isPotentiallyReactive) {
+        return wrapEffect(ctx, `${classNameFn}(${varName}, ${expr})`);
+      }
+      return `${classNameFn}(${varName}, ${expr});`;
+    }
     if (isPotentiallyReactive) {
-      ctx.imports.add("effect");
-      return `_$effect(() => ${varName}.className = ${expr});`;
+      return wrapEffect(ctx, `${varName}.className = ${expr}`);
     }
     return `${varName}.className = ${expr};`;
   }
 
   // SVG attributes
   if (isSVG) {
+    if (isHydratable) {
+      const setAttr = h(ctx, "setAttribute");
+      if (isPotentiallyReactive) {
+        return wrapEffect(ctx, `${setAttr}(${varName}, "${name}", ${expr})`);
+      }
+      return `${setAttr}(${varName}, "${name}", ${expr});`;
+    }
     if (isPotentiallyReactive) {
-      ctx.imports.add("effect");
-      return `_$effect(() => ${varName}.setAttribute("${name}", ${expr}));`;
+      return wrapEffect(ctx, `${varName}.setAttribute("${name}", ${expr})`);
     }
     return `${varName}.setAttribute("${name}", ${expr});`;
   }
 
   // Regular attributes
+  if (isHydratable) {
+    const setAttr = h(ctx, "setAttribute");
+    if (isPotentiallyReactive) {
+      return wrapEffect(ctx, `${setAttr}(${varName}, "${name}", ${expr})`);
+    }
+    return `${setAttr}(${varName}, "${name}", ${expr});`;
+  }
   if (isPotentiallyReactive) {
-    ctx.imports.add("effect");
-    return `_$effect(() => ${varName}.setAttribute("${name}", ${expr}));`;
+    return wrapEffect(ctx, `${varName}.setAttribute("${name}", ${expr})`);
   }
   return `${varName}.setAttribute("${name}", ${expr});`;
 }
@@ -908,58 +1620,67 @@ function generateSpecialProp(
  
   // classList
   if (name === "classList") {
-    ctx.imports.add("classList");
+    const classListFn = h(ctx, "classList");
     if (hasStatic) {
-      return `_$classList(${varName}, ${expr});`;
+      return `${classListFn}(${varName}, ${expr});`;
     }
-    ctx.imports.add("effect");
-    return `_$effect(() => _$classList(${varName}, ${expr}));`;
+    return wrapEffect(ctx, `${classListFn}(${varName}, ${expr})`);
   }
  
   // style (object form)
   if (name === "style") {
-    ctx.imports.add("style");
+    const styleFn = h(ctx, "style");
     if (hasStatic) {
-      return `_$style(${varName}, ${expr});`;
+      return `${styleFn}(${varName}, ${expr});`;
     }
-    ctx.imports.add("effect");
-    return `_$effect(() => _$style(${varName}, ${expr}));`;
+    return wrapEffect(ctx, `${styleFn}(${varName}, ${expr})`);
   }
 
 
   // use:directive
   if (name.startsWith("use:")) {
     const directive = name.slice(4);
-    ctx.imports.add("use");
-    return `_$use(${directive}, ${varName}, () => ${expr});`;
+    const useFn = h(ctx, "use");
+    return `${useFn}(${directive}, ${varName}, () => ${expr});`;
   }
 
   // prop:* (force property)
   if (name.startsWith("prop:")) {
     const propName = name.slice(5);
-    ctx.imports.add("effect");
-    return `_$effect(() => ${varName}.${propName} = ${expr});`;
+    if (ctx.options.hydratable) {
+      const setProp = h(ctx, "setProperty");
+      return wrapEffect(ctx, `${setProp}(${varName}, "${propName}", ${expr})`);
+    }
+    return wrapEffect(ctx, `${varName}.${propName} = ${expr}`);
   }
 
   // attr:* (force attribute)
   if (name.startsWith("attr:")) {
     const attrName = name.slice(5);
-    ctx.imports.add("effect");
-    return `_$effect(() => ${varName}.setAttribute("${attrName}", ${expr}));`;
+    const ns = parseNamespacedAttr(attrName);
+    if (ns) {
+      const setAttributeNS = h(ctx, "setAttributeNS");
+      return wrapEffect(ctx, `${setAttributeNS}(${varName}, "${ns.namespaceUri}", "${ns.localName}", ${expr})`);
+    }
+    if (ctx.options.hydratable) {
+      const setAttr = h(ctx, "setAttribute");
+      return wrapEffect(ctx, `${setAttr}(${varName}, "${attrName}", ${expr})`);
+    }
+    return wrapEffect(ctx, `${varName}.setAttribute("${attrName}", ${expr})`);
   }
 
   // on:* (non-delegated event)
   if (name.startsWith("on:")) {
     const eventName = name.slice(3);
-    ctx.imports.add("addEventListener");
-    return `_$addEventListener(${varName}, "${eventName}", ${expr}, false);`;
+    const addEventListener = h(ctx, "addEventListener");
+    return `${addEventListener}(${varName}, "${eventName}", ${expr}, false);`;
   }
 
   // oncapture:* (capture phase event)
   if (name.startsWith("oncapture:")) {
     const eventName = name.slice(10);
-    ctx.imports.add("addEventListener");
-    return `_$addEventListener(${varName}, "${eventName}", ${expr}, true);`;
+    const addEventListener = h(ctx, "addEventListener");
+    return `${addEventListener}(${varName}, "${eventName}", ${expr}, true);`;
   }
 
   return null;
@@ -976,7 +1697,9 @@ function generateEventHandler(
    const eventName = name.slice(2).toLowerCase();
  
    // If delegation is enabled (default) and this event is delegatable, use delegated handlers
-   const shouldDelegate = (ctx.options.delegateEvents ?? true) && DELEGATED_EVENTS.has(eventName);
+   const shouldDelegate =
+     (ctx.options.delegateEvents ?? true) &&
+     (DELEGATED_EVENTS.has(eventName) || ctx.options.delegatedEvents.has(eventName));
    if (shouldDelegate) {
      ctx.delegatedEvents.add(eventName);
  
@@ -990,8 +1713,8 @@ function generateEventHandler(
  
    // Fallback: non-delegated event via addEventListener
    if (value.type === "expression") {
-     ctx.imports.add("addEventListener");
-     return `_$addEventListener(${varName}, "${eventName}", ${value.value}, false);`;
+     const addEventListener = h(ctx, "addEventListener");
+     return `${addEventListener}(${varName}, "${eventName}", ${value.value}, false);`;
    }
  
    return null;
@@ -999,41 +1722,61 @@ function generateEventHandler(
 
 
 function generateDynamicChildInsertFromExpr(
-  refVar: string,
-  expr: string,
+  parentVar: string,
+  insert: ExpressionInsert,
   ctx: GeneratorContext
  ): string | null {
+  const { refVar, expr, markerVar, currentVar } = insert;
   // Normalize expression for static marker comments and nested JSX
   let normalizedExpr = rewriteNestedJSX(expr, ctx);
   const hasStatic = hasStaticMarker(normalizedExpr, ctx.options);
   if (hasStatic) {
     normalizedExpr = stripStaticMarker(normalizedExpr, ctx.options);
   }
+
+  // Guard against comment-only or empty normalized expressions.
+  // Sometimes nested JSX or debug comments can produce a string that's only a block comment
+  // (e.g. "/* <span>{option.label}</span> */"). Emitting that directly as an argument
+  // results in invalid JS like `fn(parent, /* ... */, ref)`. Replace such cases with `null`.
+  const _trimmedExpr = normalizedExpr.trim();
+  if (!_trimmedExpr || /^\/\*[\s\S]*\*\/$/.test(_trimmedExpr)) {
+    normalizedExpr = "null";
+  }
+  
+  const isHydratableInsert = ctx.options.hydratable && markerVar && currentVar;
+  const targetParent = isHydratableInsert ? parentVar : `${refVar}.parentNode`;
+  const markerArg = isHydratableInsert ? `, ${markerVar}, ${currentVar}` : `, ${refVar}`;
  
-  // Check if expression is potentially reactive
-  const isPotentiallyReactive = !hasStatic && containsFunctionCall(normalizedExpr);
-  const shouldWrapConditional =
-    !hasStatic && ctx.options.wrapConditionals && isConditionalExpression(normalizedExpr);
- 
-  ctx.imports.add("insert");
+  const insertFn = h(ctx, "insert");
  
   if (hasStatic) {
     // Do not wrap static expressions; evaluate once
-    return `_$insert(${refVar}.parentNode, ${normalizedExpr}, ${refVar});`;
+    return `${insertFn}(${targetParent}, ${normalizedExpr}${markerArg});`;
   }
  
-  if (shouldWrapConditional) {
-    ctx.imports.add("memo");
-    const memoExpr = `_$memo(() => ${normalizedExpr})`;
-    return `_$insert(${refVar}.parentNode, ${memoExpr}, ${refVar});`;
+  // Handle conditional/logical expressions with dom-expressions parity when enabled.
+  if (ctx.options.wrapConditionals && isConditionalOrLogicalExpression(normalizedExpr, ctx)) {
+    const transformed = transformConditionForInsert(normalizedExpr, ctx);
+    if (transformed) {
+      return `${insertFn}(${targetParent}, ${transformed}${markerArg});`;
+    }
+    // Fallback: keep previous behavior if we couldn't parse/transform safely.
+    const memoOrFn =
+      ctx.options.memoWrapper === false ? `() => ${normalizedExpr}` : `${h(ctx, "memo")}(() => ${normalizedExpr})`;
+    return `${insertFn}(${targetParent}, ${memoOrFn}${markerArg});`;
   }
  
+  const isPotentiallyReactive = isDynamicExpression(normalizedExpr, ctx, { checkMember: true, checkCallExpressions: true });
   if (isPotentiallyReactive) {
+    const accessorCallee = getZeroArgCallCalleeForInsert(normalizedExpr, ctx);
+    if (accessorCallee) {
+      return `${insertFn}(${targetParent}, ${accessorCallee}${markerArg});`;
+    }
     // Wrap in a function for reactivity
-    return `_$insert(${refVar}.parentNode, () => ${normalizedExpr}, ${refVar});`;
+    return `${insertFn}(${targetParent}, () => ${normalizedExpr}${markerArg});`;
   }
  
-  return `_$insert(${refVar}.parentNode, ${normalizedExpr}, ${refVar});`;
+  return `${insertFn}(${targetParent}, ${normalizedExpr}${markerArg});`;
  }
 
 
@@ -1058,9 +1801,9 @@ function generatePropsObject(
     if (value.type === "string") {
       propEntries.push(`${JSON.stringify(name)}: ${JSON.stringify(value.value)}`);
     } else if (value.type === "expression") {
-      // Check if reactive - wrap in getter
       const expr = rewriteNestedJSX(value.value, ctx);
-      if (containsFunctionCall(expr)) {
+      // Check if reactive - wrap in getter (dom-expressions isDynamic parity)
+      if (isDynamicExpression(expr, ctx, { checkMember: true, checkCallExpressions: true })) {
         propEntries.push(`get ${JSON.stringify(name)}() { return ${expr}; }`);
       } else {
         propEntries.push(`${JSON.stringify(name)}: ${expr}`);
@@ -1086,7 +1829,7 @@ function generatePropsObject(
   }
 
   if (hasSpread) {
-    ctx.imports.add("mergeProps");
+    const mergePropsFn = h(ctx, "mergeProps");
     // Need to merge spreads with regular props
     const regularProps = propEntries.filter(
       p => !props.some(pr => pr.value.type === "spread" && pr.value.value === p)
@@ -1098,10 +1841,10 @@ function generatePropsObject(
     if (regularProps.length === 0) {
       return spreadPropValues.length === 1
         ? spreadPropValues[0]!
-        : `_$mergeProps(${spreadPropValues.join(", ")})`;
+        : `${mergePropsFn}(${spreadPropValues.join(", ")})`;
     }
 
-    return `_$mergeProps(${spreadPropValues.join(", ")}, { ${regularProps.join(", ")} })`;
+    return `${mergePropsFn}(${spreadPropValues.join(", ")}, { ${regularProps.join(", ")} })`;
   }
 
   return `{ ${propEntries.join(", ")} }`;
@@ -1151,13 +1894,13 @@ function generatePropsObjectSSR(
   }
  
   if (hasSpread) {
-    ctx.imports.add("mergeProps");
+    const mergePropsFn = h(ctx, "mergeProps");
  
     if (!hasRegular) {
-      return spreads.length === 1 ? spreads[0]! : `_$mergeProps(${spreads.join(", ")})`;
+      return spreads.length === 1 ? spreads[0]! : `${mergePropsFn}(${spreads.join(", ")})`;
     }
  
-    return `_$mergeProps(${spreads.join(", ")}, { ${regular.join(", ")} })`;
+    return `${mergePropsFn}(${spreads.join(", ")}, { ${regular.join(", ")} })`;
   }
  
   return `{ ${regular.join(", ")} }`;
@@ -1171,12 +1914,12 @@ function generateSSRChildrenProp(children: ParsedChild[], ctx: GeneratorContext)
     const child = children[0]!;
     if (child.type === "text") return JSON.stringify(child.value);
     if (child.type === "expression") {
-      ctx.imports.add("escape");
+      const escapeFn = h(ctx, "escape");
       const expr = rewriteNestedJSX(child.value, ctx);
-      return `_$escape(${expr})`;
+      return `${escapeFn}(${expr})`;
     }
     if (child.type === "element") {
-      return generateElementSSR(child.value, ctx).code;
+      return generateElementSSR(child.value, ctx, false).code;
     }
   }
 
@@ -1185,17 +1928,17 @@ function generateSSRChildrenProp(children: ParsedChild[], ctx: GeneratorContext)
     if (child.type === "text") {
       parts.push(JSON.stringify(child.value));
     } else if (child.type === "expression") {
-      ctx.imports.add("escape");
+      const escapeFn = h(ctx, "escape");
       const expr = rewriteNestedJSX(child.value, ctx);
-      parts.push(`_$escape(${expr})`);
+      parts.push(`${escapeFn}(${expr})`);
     } else if (child.type === "element") {
-      parts.push(generateElementSSR(child.value, ctx).code);
+      parts.push(generateElementSSR(child.value, ctx, false).code);
     }
   }
 
   if (parts.length === 0) return null;
   if (parts.length === 1) return parts[0]!;
-  return parts.join(" + ");
+  return `[${parts.join(", ")}]`;
 }
 
 function generateChildrenProp(children: ParsedChild[], ctx: GeneratorContext): string | null {
@@ -1261,34 +2004,393 @@ function isStaticJSX(jsx: ParsedJSX): boolean {
   return true;
 }
 
-function containsFunctionCall(expr: string): boolean {
-  // Simple heuristic: contains () that's not part of arrow function
-  // This is a simplified check - a proper implementation would parse the expression
-  const trimmed = expr.trim();
+type DynamicCheckOptions = {
+  checkMember: boolean;
+  checkCallExpressions?: boolean;
+  checkTags?: boolean;
+};
 
-  // Arrow function definitions are not reactive
-  if (trimmed.startsWith("(") && trimmed.includes("=>")) {
-    return false;
+function parseExpressionForAnalysis(
+  exprText: string
+): { sf: import("typescript").SourceFile; expr: import("typescript").Expression } | null {
+  try {
+    const wrapped = `(${exprText});`;
+    const sf = ts.createSourceFile("expr.tsx", wrapped, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const stmt = sf.statements[0];
+    if (!stmt || !ts.isExpressionStatement(stmt)) return null;
+    let expr = stmt.expression;
+    while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+    return { sf, expr };
+  } catch {
+    return null;
   }
-
-  // Check for function calls
-  return /\w+\s*\(/.test(trimmed) || /\)\s*$/.test(trimmed);
 }
 
-function isConditionalExpression(expr: string): boolean {
-  // Heuristic: look for top-level ternary or logical &&||
-  // This won't catch all cases without a parser but covers common Solid patterns
-  const maybeTernary = expr.includes("?") && expr.includes(":");
-  const maybeLogical = expr.includes("&&") || expr.includes("||");
-  return maybeTernary || maybeLogical;
- }
+function printExpression(node: import("typescript").Node, sf: import("typescript").SourceFile): string {
+  return tsPrinter.printNode(ts.EmitHint.Expression, node, sf);
+}
+
+function isFunctionExpressionNode(node: import("typescript").Expression): boolean {
+  return ts.isArrowFunction(node) || ts.isFunctionExpression(node);
+}
+
+function isMemberExpressionNode(node: import("typescript").Expression): boolean {
+  return (
+    ts.isPropertyAccessExpression(node) ||
+    ts.isElementAccessExpression(node) ||
+    ts.isPropertyAccessChain(node) ||
+    ts.isElementAccessChain(node)
+  );
+}
+
+function isCallExpressionNode(node: import("typescript").Expression): boolean {
+  return ts.isCallExpression(node) || ts.isCallChain(node);
+}
+
+function isAssignableRefTarget(node: import("typescript").Expression): boolean {
+  return (
+    ts.isIdentifier(node) ||
+    ts.isPropertyAccessExpression(node) ||
+    ts.isElementAccessExpression(node)
+  );
+}
+
+function generateRefStatements(refExprText: string, elVar: string, ctx: GeneratorContext): string[] {
+  const parsed = parseExpressionForAnalysis(refExprText);
+  if (!parsed) {
+    // Fallback: only call if it's a function (avoid invalid assignments).
+    return [`typeof ${refExprText} === "function" && ${refExprText}(${elVar});`];
+  }
+
+  const expr = parsed.expr;
+
+  // ref={(el) => ...} / ref={function(el){...}}
+  if (isFunctionExpressionNode(expr)) {
+    const printed = printExpression(expr, parsed.sf);
+    return [`(${printed})(${elVar});`];
+  }
+
+  // ref={someFactory()} (dom-expressions parity: evaluate once and call if function)
+  if (isCallExpressionNode(expr)) {
+    const refVar = allocVar(ctx, "_ref$");
+    const printed = printExpression(expr, parsed.sf);
+    return [`const ${refVar} = ${printed};`, `typeof ${refVar} === "function" && ${refVar}(${elVar});`];
+  }
+
+  const printed = printExpression(expr, parsed.sf);
+  if (isAssignableRefTarget(expr)) {
+    // Avoid double-evaluation only for identifier assignments; member expressions may still
+    // re-evaluate, matching the simple patterns in dom-expressions' output.
+    return [
+      `typeof ${printed} === "function" ? ${printed}(${elVar}) : ${printed} = ${elVar};`
+    ];
+  }
+
+  // Non-assignable: only call if it's a function.
+  return [`typeof ${printed} === "function" && ${printed}(${elVar});`];
+}
+
+function isLogicalBinaryExpression(node: import("typescript").Expression): node is import("typescript").BinaryExpression {
+  return (
+    ts.isBinaryExpression(node) &&
+    (node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+      node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+      node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)
+  );
+}
+
+function isDynamicExpression(exprText: string, ctx: GeneratorContext, opts: DynamicCheckOptions): boolean {
+  const parsed = parseExpressionForAnalysis(exprText);
+  if (!parsed) {
+    // Fallback: keep the old conservative behavior for calls.
+    return /\w+\s*\(/.test(exprText) || /\)\s*$/.test(exprText) || (opts.checkMember && /[.\[]/.test(exprText));
+  }
+
+  const { sf, expr } = parsed;
+  const checkCallExpressions = opts.checkCallExpressions ?? true;
+  const checkTags = opts.checkTags ?? false;
+  const checkMember = opts.checkMember;
+
+  const isDynamicNode = (node: import("typescript").Expression): boolean => {
+    if (isFunctionExpressionNode(node)) return false;
+
+    if (checkCallExpressions && (isCallExpressionNode(node) || ts.isTaggedTemplateExpression(node))) return true;
+
+    if (checkMember && isMemberExpressionNode(node)) {
+      // Do not assume property access on namespaced imports as dynamic (dom-expressions parity).
+      const objectExpr = (node as import("typescript").PropertyAccessExpression | import("typescript").ElementAccessExpression)
+        .expression;
+      if (ts.isIdentifier(objectExpr) && ctx.namespaceImports.has(objectExpr.text)) {
+        if (ts.isElementAccessExpression(node) || ts.isElementAccessChain(node)) {
+          const arg = (node as import("typescript").ElementAccessExpression | import("typescript").ElementAccessChain)
+            .argumentExpression;
+          if (arg && !isDynamicNode(arg)) return false;
+        } else {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    if (checkMember && ts.isSpreadElement(node)) return true;
+
+    if (checkMember && ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.InKeyword) return true;
+
+    if (checkTags && (ts.isJsxElement(node) || (ts.isJsxFragment(node) && node.children.length))) return true;
+
+    // Traverse children, skipping function bodies (but allowing computed keys).
+    let dynamic = false;
+    const visit = (n: import("typescript").Node) => {
+      if (dynamic) return;
+
+      if (
+        ts.isFunctionExpression(n) ||
+        ts.isArrowFunction(n) ||
+        ts.isFunctionDeclaration(n) ||
+        ts.isMethodDeclaration(n) ||
+        ts.isGetAccessorDeclaration(n) ||
+        ts.isSetAccessorDeclaration(n)
+      ) {
+        if (
+          (ts.isMethodDeclaration(n) || ts.isGetAccessorDeclaration(n) || ts.isSetAccessorDeclaration(n)) &&
+          n.name &&
+          ts.isComputedPropertyName(n.name)
+        ) {
+          dynamic = isDynamicNode(n.name.expression);
+        }
+        return;
+      }
+
+      if (ts.isExpression(n)) {
+        dynamic = isDynamicNode(n);
+        if (dynamic) return;
+      }
+
+      n.forEachChild(visit);
+    };
+
+    node.forEachChild(visit);
+    return dynamic;
+  };
+
+  // Top-level checks mirror dom-expressions, then fall back to traversal.
+  if (isFunctionExpressionNode(expr)) return false;
+  if (checkCallExpressions && (isCallExpressionNode(expr) || ts.isTaggedTemplateExpression(expr))) return true;
+  if (checkMember && isMemberExpressionNode(expr)) {
+    // Apply namespace import exclusion at the top level too.
+    const objectExpr = (expr as import("typescript").PropertyAccessExpression | import("typescript").ElementAccessExpression)
+      .expression;
+    if (ts.isIdentifier(objectExpr) && ctx.namespaceImports.has(objectExpr.text)) {
+      if (ts.isElementAccessExpression(expr) || ts.isElementAccessChain(expr)) {
+        const arg = (expr as import("typescript").ElementAccessExpression | import("typescript").ElementAccessChain)
+          .argumentExpression;
+        if (arg && !isDynamicNode(arg)) return false;
+      } else {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (checkMember && (ts.isSpreadElement(expr) || (ts.isBinaryExpression(expr) && expr.operatorToken.kind === ts.SyntaxKind.InKeyword)))
+    return true;
+  if (checkTags && (ts.isJsxElement(expr) || (ts.isJsxFragment(expr) && expr.children.length))) return true;
+
+  return isDynamicNode(expr);
+}
+
+function isConditionalOrLogicalExpression(exprText: string, ctx: GeneratorContext): boolean {
+  const parsed = parseExpressionForAnalysis(exprText);
+  if (!parsed) return exprText.includes("?") || exprText.includes("&&") || exprText.includes("||");
+  const e = parsed.expr;
+  return ts.isConditionalExpression(e) || isLogicalBinaryExpression(e);
+}
+
+function getZeroArgCallCalleeForInsert(exprText: string, ctx: GeneratorContext): string | null {
+  const parsed = parseExpressionForAnalysis(exprText);
+  if (!parsed) return null;
+  const { sf, expr } = parsed;
+  if (!ts.isCallExpression(expr)) return null;
+  if (expr.arguments.length !== 0) return null;
+  const callee = expr.expression;
+  if (ts.isCallExpression(callee) || isMemberExpressionNode(callee)) return null;
+  return printExpression(callee, sf);
+}
+
+function wrapWithDoubleNegation(test: import("typescript").Expression): import("typescript").Expression {
+  if (ts.isBinaryExpression(test)) return test;
+  return ts.factory.createPrefixUnaryExpression(
+    ts.SyntaxKind.ExclamationToken,
+    ts.factory.createPrefixUnaryExpression(ts.SyntaxKind.ExclamationToken, test)
+  );
+}
+
+function transformConditionForInsert(exprText: string, ctx: GeneratorContext): string | null {
+  const parsed = parseExpressionForAnalysis(exprText);
+  if (!parsed) return null;
+  const { sf, expr } = parsed;
+
+  // Conditional (a ? b : c)
+  if (ts.isConditionalExpression(expr)) {
+    // Only transform when branches are dynamic, matching dom-expressions.
+    const consequentDynamic = isDynamicExpression(printExpression(expr.whenTrue, sf), ctx, { checkMember: true, checkCallExpressions: true });
+    const alternateDynamic = isDynamicExpression(printExpression(expr.whenFalse, sf), ctx, { checkMember: true, checkCallExpressions: true });
+    if (!consequentDynamic && !alternateDynamic) {
+      return `() => ${exprText}`;
+    }
+
+    const dTest = isDynamicExpression(printExpression(expr.condition, sf), ctx, { checkMember: true });
+    if (!dTest) {
+      return `() => ${exprText}`;
+    }
+
+    const cond = wrapWithDoubleNegation(expr.condition);
+    const condText = printExpression(cond, sf);
+    const id = allocName(ctx, "_c$");
+    const wrappedTest =
+      ctx.options.memoWrapper === false ? `() => ${condText}` : `${h(ctx, "memo")}(() => ${condText})`;
+
+    const testCall = ts.factory.createCallExpression(ts.factory.createIdentifier(id), undefined, []);
+    const nextExpr = ts.factory.updateConditionalExpression(expr, testCall, expr.questionToken, expr.whenTrue, expr.colonToken, expr.whenFalse);
+    const nextText = printExpression(nextExpr, sf);
+
+    return `(() => { var ${id} = ${wrappedTest}; return () => ${nextText}; })()`;
+  }
+
+  // Logical expression (&&, ||, ??)
+  if (isLogicalBinaryExpression(expr)) {
+    // Match dom-expressions: find left-most && in a top-level or chain.
+    let target: import("typescript").BinaryExpression = expr;
+    while (target.operatorToken.kind !== ts.SyntaxKind.AmpersandAmpersandToken && isLogicalBinaryExpression(target.left)) {
+      target = target.left;
+    }
+
+    if (target.operatorToken.kind !== ts.SyntaxKind.AmpersandAmpersandToken) {
+      return `() => ${exprText}`;
+    }
+
+    const rightDynamic = isDynamicExpression(printExpression(target.right, sf), ctx, { checkMember: true, checkCallExpressions: true });
+    const dTest = rightDynamic && isDynamicExpression(printExpression(target.left, sf), ctx, { checkMember: true });
+    if (!dTest) {
+      return `() => ${exprText}`;
+    }
+
+    const cond = wrapWithDoubleNegation(target.left);
+    const condText = printExpression(cond, sf);
+    const id = allocName(ctx, "_c$");
+    const wrappedTest =
+      ctx.options.memoWrapper === false ? `() => ${condText}` : `${h(ctx, "memo")}(() => ${condText})`;
+
+    const leftCall = ts.factory.createCallExpression(ts.factory.createIdentifier(id), undefined, []);
+    const updatedTarget = ts.factory.updateBinaryExpression(target, leftCall, target.operatorToken, target.right);
+
+    const replaceInLogical = (node: import("typescript").Expression): import("typescript").Expression => {
+      if (node === target) return updatedTarget;
+      if (ts.isBinaryExpression(node)) {
+        const nextLeft = replaceInLogical(node.left);
+        const nextRight = replaceInLogical(node.right);
+        if (nextLeft !== node.left || nextRight !== node.right) {
+          return ts.factory.updateBinaryExpression(node, nextLeft, node.operatorToken, nextRight);
+        }
+      }
+      return node;
+    };
+
+    const nextExpr = replaceInLogical(expr);
+    const nextText = printExpression(nextExpr, sf);
+
+    return `(() => { var ${id} = ${wrappedTest}; return () => ${nextText}; })()`;
+  }
+
+  return null;
+}
  
+// DOM template closing-tag minimization (dom-expressions parity)
+const ALWAYS_CLOSE_TAGS = new Set([
+  "title",
+  "style",
+  "a",
+  "strong",
+  "small",
+  "b",
+  "u",
+  "i",
+  "em",
+  "s",
+  "code",
+  "object",
+  "table",
+  "button",
+  "textarea",
+  "select",
+  "iframe",
+  "script",
+  "noscript",
+  "template",
+  "fieldset"
+]);
+
+const INLINE_ELEMENTS = new Set([
+  "a",
+  "abbr",
+  "acronym",
+  "b",
+  "bdi",
+  "bdo",
+  "big",
+  "br",
+  "button",
+  "canvas",
+  "cite",
+  "code",
+  "data",
+  "datalist",
+  "del",
+  "dfn",
+  "em",
+  "embed",
+  "i",
+  "iframe",
+  "img",
+  "input",
+  "ins",
+  "kbd",
+  "label",
+  "map",
+  "mark",
+  "meter",
+  "noscript",
+  "object",
+  "output",
+  "picture",
+  "progress",
+  "q",
+  "ruby",
+  "s",
+  "samp",
+  "script",
+  "select",
+  "slot",
+  "small",
+  "span",
+  "strong",
+  "sub",
+  "sup",
+  "svg",
+  "template",
+  "textarea",
+  "time",
+  "u",
+  "tt",
+  "var",
+  "video"
+]);
+
  // Block elements that cannot be inside <p>
  const BLOCK_ELEMENTS = new Set([
    "address", "article", "aside", "blockquote", "dd", "details", "dialog",
    "div", "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form",
    "h1", "h2", "h3", "h4", "h5", "h6", "header", "hgroup", "hr", "li",
-   "main", "nav", "ol", "p", "pre", "section", "table", "ul"
+   "main", "menu", "nav", "ol", "p", "pre", "section", "table", "ul"
  ]);
 
  // Interactive elements that cannot be nested inside other interactive elements
@@ -1363,17 +2465,18 @@ function isConditionalExpression(expr: string): boolean {
   * - /* @once * /
   * - /*  @once  * /
   */
- function hasStaticMarker(expr: string, options: ResolvedGasOptions): boolean {
-  const marker = options.staticMarker;
-  if (!marker) return false;
-  
-  // Escape special regex characters in the marker
-  const escapedMarker = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  
-  // Match block comment with the marker, allowing whitespace variations
-  const pattern = new RegExp(`\\/\\*\\s*${escapedMarker}\\s*\\*\\/`);
-  return pattern.test(expr);
- }
+  function hasStaticMarker(expr: string, options: ResolvedGasOptions): boolean {
+   const marker = options.staticMarker;
+   if (!marker) return false;
+   
+   // Escape special regex characters in the marker
+   const escapedMarker = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+   
+   // Match block comment with the marker, allowing whitespace variations
+   // Accept both /* ... */ and /** ... */ (JSDoc-style) formats
+   const pattern = new RegExp(`\\/\\*\\*?\\s*${escapedMarker}\\s*\\*\\/`);
+   return pattern.test(expr);
+  }
  
  /**
   * Strip static marker comment from expression.
@@ -1387,7 +2490,8 @@ function isConditionalExpression(expr: string): boolean {
    const escapedMarker = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
    
    // Match block comment with the marker, allowing whitespace variations
-   const pattern = new RegExp(`\\/\\*\\s*${escapedMarker}\\s*\\*\\/`);
+   // Accept both /* ... */ and /** ... */ (JSDoc-style) formats
+   const pattern = new RegExp(`\\/\\*\\*?\\s*${escapedMarker}\\s*\\*\\/`);
    return expr.replace(pattern, "").trim();
  }
  

@@ -39,6 +39,11 @@ const domOptions: ResolvedGasOptions = {
   filter: /\.[tj]sx$/
 };
 
+const domHydratableOptions: ResolvedGasOptions = {
+  ...domOptions,
+  hydratable: true
+};
+
 const ssrOptions: ResolvedGasOptions = {
   generate: "ssr",
   hydratable: true,
@@ -76,6 +81,7 @@ const universalOptions: ResolvedGasOptions = {
 
 const modeOptions: Record<string, ResolvedGasOptions> = {
   dom: domOptions,
+  domHydratable: domHydratableOptions,
   ssr: ssrOptions,
   hydratable: hydratableOptions,
   universal: universalOptions

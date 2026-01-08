@@ -72,8 +72,21 @@ describe("Hydration smoke test", () => {
     expect(renderFn).toBeTruthy();
     const ssrHTML = renderFn ? await renderFn(new URL("http://localhost/")) : "";
 
-    // Write SSR HTML into the DOM
-    dom.window.document.getElementById("app")!.innerHTML = ssrHTML;
+    // Recreate DOM from SSR document so hydration markers/script are present
+    const hydratedDom = new JSDOM(ssrHTML, {
+      url: "http://localhost",
+      pretendToBeVisual: false,
+      resources: "usable",
+      runScripts: "dangerously"
+    });
+
+    // Swap globals to the SSR DOM environment
+    global.window = hydratedDom.window as any;
+    global.document = hydratedDom.window.document;
+    global.requestAnimationFrame = hydratedDom.window.requestAnimationFrame;
+    global.sessionStorage = (hydratedDom.window as any).sessionStorage ?? createStorageStub();
+    global.localStorage = (hydratedDom.window as any).localStorage ?? createStorageStub();
+    global.scrollTo = global.scrollTo ?? (() => {});
 
     // Evaluate client code to trigger hydration
     await import(clientUrl);
@@ -82,7 +95,7 @@ describe("Hydration smoke test", () => {
     await new Promise(resolve => setTimeout(resolve, 0));
 
     // Basic sanity checks
-    const appEl = dom.window.document.getElementById("app")!;
+    const appEl = hydratedDom.window.document.getElementById("app")!;
     expect(appEl.textContent).toContain("Gas SSR Router Demo");
     expect(appEl.querySelector("nav")).toBeTruthy();
     expect(appEl.querySelector("section")).toBeTruthy();

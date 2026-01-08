@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import type { BuildOutput } from "bun";
-import gasPlugin from "../../dist/index.js";
+import gasPlugin from "../../../dist/index.js";
 
 async function buildApp() {
   try {
@@ -14,6 +14,7 @@ async function buildApp() {
       plugins: [
         gasPlugin({
           generate: "dom",
+          hydratable: true,
           dev: false
         })
       ],

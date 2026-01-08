@@ -52,5 +52,8 @@
   },
   "repository": {
     "url": "https://github.com/nduartech/gas"
+  },
+  "dependencies": {
+    "magic-string": "^0.30.21"
   }
 }

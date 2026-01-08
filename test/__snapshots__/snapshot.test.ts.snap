@@ -2,7 +2,7 @@
 
 exports[`transform snapshots dom static and dynamic 1`] = `
 "import { template as _$template, insert as _$insert, effect as _$effect, delegateEvents as _$delegateEvents } from "solid-js/web";
-const _tmpl$ = /*#__PURE__*/_$template(\`<div>Hi <!></div>\`);
+const _tmpl$ = /*#__PURE__*/_$template(\`<div>Hi <!>\`);
 const view = (() => {
   const _el$0 = _tmpl$();
   const _el$1 = _el$0.firstChild.nextSibling;
@@ -15,11 +15,14 @@ _$delegateEvents(["click"]);"
 `;
 
 exports[`transform snapshots ssr with hydration 1`] = `
-"import { escape as _$escape, ssrHydrationKey as _$ssrHydrationKey, ssrElement as _$ssrElement } from "solid-js/web";
-const view = _$ssrElement("main", { "data-hk": _$ssrHydrationKey() }, _$ssrElement("h1", { "title": title(), "data-hk": _$ssrHydrationKey() }, "Hello", true) + For({ "each": items(), get children() { return _$escape(item => _$ssrElement("span", { "data-hk": _$ssrHydrationKey() }, _$escape(item), true)); } }), true);"
+"import { escape as _$escape, ssr as _$ssr, ssrHydrationKey as _$ssrHydrationKey, ssrAttribute as _$ssrAttribute } from "solid-js/web";
+var _tmpl$ = ["<span>", "</span>"];
+var _tmpl$2 = ["<main", "><h1", ">Hello</h1><!--$-->", "<!--/--></main>"];
+const view = _$ssr(_tmpl$2, _$ssrHydrationKey(), _$ssrAttribute("title", _$escape(title(), true), false), _$escape(For({ "each": items(), get children() { return _$escape(item => _$ssr(_tmpl$, _$escape(item))); } })));"
 `;
 
 exports[`transform snapshots universal basic 1`] = `
-"import { ssrHydrationKey as _$ssrHydrationKey, ssrElement as _$ssrElement } from "solid-js/universal";
-const view = _$ssrElement("section", { "data-hk": _$ssrHydrationKey() }, _$ssrElement("button", { "onClick": click, "data-hk": _$ssrHydrationKey() }, "Go", true), true);"
+"import { ssrHydrationKey as _$ssrHydrationKey } from "solid-js/universal";
+var _tmpl$ = ["<section", "><button>Go</button></section>"];
+const view = _tmpl$[0] + _$ssrHydrationKey() + _tmpl$[1];"
 `;
