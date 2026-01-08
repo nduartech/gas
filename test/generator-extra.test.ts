@@ -127,24 +127,24 @@ describe("generateSolidCode (SSR)", () => {
     const result = generateSolidCode(jsx, ssrOptions);
 
     expect(result.imports.has("ssrElement")).toBe(true);
-    expect(result.imports.has("ssrClassList")).toBe(true);
-    expect(result.imports.has("ssrStyle")).toBe(true);
-    // ssrSpread is used for spread props in SSR mode
-    expect(result.imports.has("ssrSpread")).toBe(true);
+    expect(result.imports.has("mergeProps")).toBe(true);
     expect(result.code).toContain("_$ssrElement");
-    expect(result.code).toContain("ssrClassList");
-    expect(result.code).toContain("ssrStyle");
-    expect(result.code).toContain("data-id");
+    expect(result.code).toContain("\"classList\": { active: isActive }");
+    expect(result.code).toContain("\"style\": { color: color() }");
+    expect(result.code).toContain("\"attr:data-id\": id");
   });
 
-  test("lowercases SSR boolean attributes from camelCase JSX", () => {
+  test("normalizes SSR boolean attribute keys to lowercase", () => {
     const jsx = parseJSX(`<video autoFocus playsInline muted={muted} />`);
 
     const result = generateSolidCode(jsx, ssrOptions);
 
-    expect(result.imports.has("ssrAttribute")).toBe(true);
-    expect(result.code).toContain('"autofocus": _$ssrAttribute("autofocus", true)');
-    expect(result.code).toContain('"playsinline": _$ssrAttribute("playsinline", true)');
-    expect(result.code).toContain('"muted": _$ssrAttribute("muted", muted)');
+    // Template-based SSR output should normalize booleans to lowercase attribute names.
+    expect(result.imports.has("ssr")).toBe(true);
+    expect(result.imports.has("ssrHydrationKey")).toBe(true);
+    expect(result.code).toContain("_$ssr(");
+    expect(result.templates.join("\n")).toContain("autofocus");
+    expect(result.templates.join("\n")).toContain("playsinline");
+    expect(result.code).toContain('_$ssrAttribute("muted", muted, true)');
   });
 });

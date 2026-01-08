@@ -13,7 +13,7 @@ const source = `
 const options: ResolvedGasOptions = {
   generate: "ssr",
   hydratable: true,
-  moduleName: "solid-js/ssr",
+  moduleName: "solid-js/web",
   runtime: "ssr",
   builtIns: new Set(["For","Show","Switch","Match","Suspense","SuspenseList","Portal","Index","Dynamic","ErrorBoundary"]),
   delegateEvents: true,

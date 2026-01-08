@@ -1,3 +1,4 @@
-import { ssrHydrationKey as _$ssrHydrationKey, ssrElement as _$ssrElement } from "solid-js/web";
+import { ssrHydrationKey as _$ssrHydrationKey } from "solid-js/web";
+var _tmpl$ = ["<div", " class=\"a\">Hello</div>"];
 /** @jsxImportSource solid-js */
-const view = _$ssrElement("div", { "class": "a", "data-hk": _$ssrHydrationKey() }, "Hello", true);
+const view = _tmpl$[0] + _$ssrHydrationKey() + _tmpl$[1];

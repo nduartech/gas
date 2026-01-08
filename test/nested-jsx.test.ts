@@ -66,18 +66,16 @@ describe("nested JSX expressions", () => {
     const result = transformJSX(source, ssrOptions);
 
     expect(result).not.toContain("jsxDEV");
-    expect(result).toContain("_$ssrElement");
+    expect(result).toContain("_$ssr");
     expect(result).toContain("article");
   });
 
-  test("templates include closing tags for valid DOM parsing", () => {
-    // Regression test: templates need valid HTML for browser parsing
-    // Previously, omitLastClosingTag broke DOM templates by removing closing tags
+  test("templates omit last closing tag when enabled (babel parity)", () => {
+    // babel-preset-solid/dom-expressions omit the last closing tag by default
     const source = `const view = <div class="wrapper">{content()}</div>;`;
     const result = transformJSX(source, domOptions);
 
-    // Template must have closing </div> tag for valid HTML
-    expect(result).toMatch(/_\$template\(`<div class=wrapper><!><\/div>`\)/);
+    expect(result).toMatch(/_\$template\(`<div class=wrapper><!>`\)/);
   });
 
   test("For loop with nested button has valid template structure", () => {
@@ -99,11 +97,11 @@ describe("nested JSX expressions", () => {
     `;
     const result = transformJSX(source, domOptions);
 
-    // Container div template should have placeholder and closing tag
-    expect(result).toMatch(/_\$template\(`<div class=container><!><\/div>`\)/);
+    // Container div template should have placeholder (last closing tag omitted by default)
+    expect(result).toMatch(/_\$template\(`<div class=container><!>`\)/);
     
-    // Button template should have placeholder and closing tag  
-    expect(result).toMatch(/_\$template\(`<button type=button><!><\/button>`\)/);
+    // Button template should have placeholder (last closing tag omitted by default)
+    expect(result).toMatch(/_\$template\(`<button type=button><!>`\)/);
     
     // Should use insert for dynamic content placement
     expect(result).toContain("_$insert");
@@ -112,11 +110,12 @@ describe("nested JSX expressions", () => {
     expect(result).not.toContain("jsxDEV");
   });
 
-  test("deeply nested static elements have all closing tags", () => {
+  test("can force full closing tags by disabling omitLastClosingTag", () => {
+    const fullCloseOptions: ResolvedGasOptions = { ...domOptions, omitLastClosingTag: false };
     const source = `const el = <div><section><article><p>Text</p></article></section></div>;`;
-    const result = transformJSX(source, domOptions);
+    const result = transformJSX(source, fullCloseOptions);
 
-    // All closing tags must be present for valid HTML
+    // All closing tags must be present when omitLastClosingTag is disabled
     expect(result).toContain("</p>");
     expect(result).toContain("</article>");
     expect(result).toContain("</section>");

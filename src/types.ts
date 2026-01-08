@@ -3,13 +3,20 @@
  */
 export interface GasPluginOptions {
   /**
-   * Output mode: "dom" for client-side, "ssr" for server-side rendering
+   * Output mode.
+   *
+   * For Babel compatibility, `"universal"` is accepted and is treated as `generate: "ssr"` with
+   * `runtime: "universal"`.
    * @default "dom"
    */
-  generate?: "dom" | "ssr";
+  generate?: "dom" | "ssr" | "universal";
 
   /**
-   * Enable hydration support for SSR
+   * Enable hydratable output.
+   *
+   * - When `generate: "dom"`, emits hydratable DOM code using Solid's hydration helpers
+   *   (e.g. `getNextElement`, `getNextMarker`) so the client can `hydrate(...)` server output.
+   * - When `generate: "ssr"`, emits hydration keys on elements so they can be matched on the client.
    * @default false
    */
   hydratable?: boolean;
@@ -38,6 +45,13 @@ export interface GasPluginOptions {
    * @default true
    */
   delegateEvents?: boolean;
+
+  /**
+   * Additional event names to treat as delegatable when `delegateEvents` is enabled.
+   * Matches `dom-expressions` `delegatedEvents` option (extends the default list).
+   * @default []
+   */
+  delegatedEvents?: string[];
 
   /**
    * Wrap conditionals in memos for fine-grained reactivity
@@ -94,13 +108,13 @@ export interface GasPluginOptions {
    * Name of the reactive effect function used for wrapping dynamic expressions
    * @default "effect"
    */
-  effectWrapper?: string;
+  effectWrapper?: string | false;
 
   /**
    * Name of the memo function used for conditional expressions
    * @default "memo"
    */
-  memoWrapper?: string;
+  memoWrapper?: string | false;
 
   /**
    * Enable HTML structure validation for JSX output
@@ -116,6 +130,15 @@ export interface GasPluginOptions {
    * @default false
    */
   dev?: boolean;
+
+  /**
+   * Generate source maps for transformed modules.
+   *
+   * Note: Bun plugins can't currently return a separate sourcemap object, so `true`
+   * is treated as `"inline"` and emits an inline `//# sourceMappingURL=...` comment.
+   * @default false
+   */
+  sourceMap?: boolean | "inline";
 
   /**
    * File filter regex pattern
@@ -135,6 +158,7 @@ export interface ResolvedGasOptions {
   runtime?: "dom" | "ssr" | "universal";
   builtIns: Set<string>;
   delegateEvents: boolean;
+  delegatedEvents: Set<string>;
   wrapConditionals: boolean;
   omitNestedClosingTags: boolean;
   omitLastClosingTag: boolean;
@@ -142,10 +166,11 @@ export interface ResolvedGasOptions {
   requireImportSource: string | false;
   contextToCustomElements: boolean;
   staticMarker: string;
-  effectWrapper: string;
-  memoWrapper: string;
+  effectWrapper: string | false;
+  memoWrapper: string | false;
   validate: boolean;
   dev: boolean;
+  sourceMap: false | "inline";
   filter: RegExp;
 }
 

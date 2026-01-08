@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { transformJSX, hasJSX } from "../src/transformer.js";
+import { transformJSX, transformJSXWithMap, hasJSX } from "../src/transformer.js";
 import type { ResolvedGasOptions } from "../src/types.js";
 import { domBasic } from "./golden/dom-basic.js";
 import { ssrBasic } from "./golden/ssr-basic.js";
@@ -33,6 +33,7 @@ const defaultOptions: ResolvedGasOptions = {
     "ErrorBoundary"
   ]),
   delegateEvents: true,
+  delegatedEvents: new Set(),
   wrapConditionals: true,
   omitNestedClosingTags: false,
   omitLastClosingTag: true,
@@ -44,6 +45,7 @@ const defaultOptions: ResolvedGasOptions = {
   memoWrapper: "memo",
   validate: true,
   dev: false,
+  sourceMap: false,
   filter: /\.[tj]sx$/
 };
 
@@ -67,6 +69,55 @@ describe("hasJSX", () => {
 });
 
 describe("transformJSX", () => {
+  test("avoids collisions with user-defined helper identifiers", () => {
+    const source = `
+      const _$template = 123;
+      const el = <div>Hello</div>;
+      export const value = _$template;
+    `;
+    const result = transformJSX(source, defaultOptions);
+
+    // Import should not collide with existing _$template binding.
+    expect(result).toContain("template as _$template2");
+    // The user's reference must still point at their original variable.
+    expect(result).toContain("export const value = _$template;");
+  });
+
+  test("avoids shadowing user identifiers inside embedded expressions", () => {
+    const source = `
+      const _el$0 = "USER";
+      const el = <div>{_el$0}</div>;
+    `;
+    const result = transformJSX(source, defaultOptions);
+
+    // Our generated IIFE must not declare const _el$0 = ...
+    expect(result).not.toMatch(/const _el\\$0\\s*=/);
+    // The inserted expression must still reference the user's _el$0 variable.
+    expect(result).toContain(", _el$0,");
+  });
+
+  test("preserves shebang at the top of the file", () => {
+    const source = `#!/usr/bin/env bun\nconst el = <div>Hello</div>;`;
+    const result = transformJSX(source, defaultOptions);
+
+    expect(result.startsWith("#!/usr/bin/env bun\n")).toBe(true);
+    // Shebang must come before generated imports
+    expect(result.indexOf("#!/usr/bin/env bun")).toBeLessThan(result.indexOf("import {"));
+  });
+
+  test("preserves directive prologue before generated imports", () => {
+    const source = `#!/usr/bin/env bun\n"use client";\nconst el = <div>Hello</div>;`;
+    const result = transformJSX(source, defaultOptions);
+
+    const shebangIndex = result.indexOf("#!/usr/bin/env bun");
+    const directiveIndex = result.indexOf("\"use client\";");
+    const importIndex = result.indexOf("import {");
+
+    expect(shebangIndex).toBe(0);
+    expect(directiveIndex).toBeGreaterThan(shebangIndex);
+    expect(importIndex).toBeGreaterThan(directiveIndex);
+  });
+
   test("respects requireImportSource pragma when set", () => {
     const optionsWithPragma: ResolvedGasOptions = { ...defaultOptions, requireImportSource: "solid-js" };
 
@@ -119,6 +170,15 @@ describe("transformJSX", () => {
     expect(result).toContain('import { template as _$template } from "solid-js/web"');
   });
 
+  test("transformJSXWithMap returns a sourcemap for JSX transforms", () => {
+    const source = `const el = <div>Hello</div>;`;
+    const result = transformJSXWithMap(source, defaultOptions, "input.tsx");
+
+    expect(result.code).toContain("_$template");
+    expect(result.map).toBeTruthy();
+    expect(result.map.sources).toContain("input.tsx");
+  });
+
   test("uses custom effect/memo wrapper names in imports", () => {
     const customOptions: ResolvedGasOptions = {
       ...defaultOptions,
@@ -131,6 +191,25 @@ describe("transformJSX", () => {
 
     // Should import the configured wrapper name as _$effect
     expect(result).toContain('import { template as _$template, createEffect as _$effect } from "solid-js/web"');
+  });
+
+  test("supports wrapperless mode (effectWrapper/memoWrapper: false)", () => {
+    const wrapperlessOptions: ResolvedGasOptions = {
+      ...defaultOptions,
+      effectWrapper: false,
+      memoWrapper: false
+    };
+    const source = `
+      const el = (
+        <div classList={{ active: state.active }}>
+          {state.active ? good() : bad}
+        </div>
+      );
+    `;
+    const result = transformJSX(source, wrapperlessOptions);
+
+    expect(result).not.toContain("_$effect");
+    expect(result).not.toContain("_$memo");
   });
 
 
@@ -169,7 +248,7 @@ describe("transformJSX", () => {
     expect(result).toContain('class="simple"');
   });
 
-  test("ignores closing tag optimization in DOM mode (browser requires valid HTML)", () => {
+  test("applies closing tag minimization in DOM mode by default (babel parity)", () => {
     const optionsWithNested: ResolvedGasOptions = {
       ...defaultOptions,
       omitNestedClosingTags: true,
@@ -179,8 +258,8 @@ describe("transformJSX", () => {
     const source = `const el = <div><span>First</span><span>Second</span></div>`;
     const result = transformJSX(source, optionsWithNested);
 
-    // DOM templates must have valid HTML for browser parsing - closing tags are always included
-    expect(result).toContain("_$template(`<div><span>First</span><span>Second</span></div>`)");
+    // Last closing tags are omitted when enabled
+    expect(result).toContain("_$template(`<div><span>First</span><span>Second`)");
   });
 
 
@@ -216,6 +295,21 @@ describe("transformJSX", () => {
     const result = transformJSX(source, defaultOptions);
 
     expect(result).toContain("div =");
+  });
+
+  test("ref call expressions are evaluated once (babel-preset-solid parity)", () => {
+    const source = `
+      const getRef = () => (el) => console.log(el);
+      const el = <div ref={getRef()}>Content</div>;
+    `;
+    const result = transformJSX(source, defaultOptions);
+
+    // Should not attempt to assign to the call expression and should not call getRef() twice.
+    expect(result).not.toContain("getRef() =");
+    expect(result.match(/getRef\(\)/g)?.length).toBe(1);
+    // Should introduce a temp ref var and invoke it if function.
+    expect(result).toMatch(/const _ref\$\d+ = getRef\(\);/);
+    expect(result).toMatch(/typeof _ref\$\d+ === "function" && _ref\$\d+\(/);
   });
 
   test("transforms fragment", () => {
@@ -321,7 +415,34 @@ describe("transformJSX", () => {
     const result = transformJSX(source, defaultOptions);
  
     expect(result).toContain("_$insert");
-    expect(result).toContain("count()");
+    // Zero-arg call expressions are treated as accessors (dom-expressions parity)
+    expect(result).toContain(", count,");
+  });
+
+  test("treats member expressions as dynamic (dom-expressions parity)", () => {
+    const source = `const el = <div>{props.name}</div>;`;
+    const result = transformJSX(source, defaultOptions);
+
+    // Member expressions should be wrapped in an accessor so they can be tracked.
+    expect(result).toContain("_$insert");
+    expect(result).toContain("() => props.name");
+  });
+
+  test("treats member expressions in attributes as dynamic (dom-expressions parity)", () => {
+    const source = `const el = <div title={props.title}>x</div>;`;
+    const result = transformJSX(source, defaultOptions);
+
+    // Dynamic attributes should be updated inside an effect.
+    expect(result).toContain("_$effect");
+    expect(result).toContain('setAttribute("title", props.title)');
+  });
+
+  test("treats member expressions in component props as dynamic (dom-expressions parity)", () => {
+    const source = `const el = <Comp value={props.value} />;`;
+    const result = transformJSX(source, defaultOptions);
+
+    // Dynamic component props should be getter properties.
+    expect(result).toContain('get "value"() { return props.value; }');
   });
 
   test("respects staticMarker on child expressions", () => {
@@ -499,8 +620,8 @@ describe("transformJSX", () => {
 
     // Uses the configured universal module
     expect(result).toContain('from "solid-js/universal"');
-    // Still contains SSR helpers
-    expect(result).toContain("_$ssrElement");
+    // Uses SSR template helper output
+    expect(result).toContain("_$ssr");
   });
 
   test("dev mode adds debug comments to templates", () => {
@@ -644,6 +765,18 @@ describe("event delegation", () => {
     expect(result).toContain('"scroll"');
   });
 
+  test("delegatedEvents extends the default delegation list", () => {
+    const customDelegation: ResolvedGasOptions = {
+      ...defaultOptions,
+      delegatedEvents: new Set(["scroll"])
+    };
+    const source = `<div onScroll={handleScroll}>Content</div>`;
+    const result = transformJSX(source, customDelegation);
+
+    expect(result).toContain("$$scroll");
+    expect(result).toContain('_$delegateEvents(["scroll"])');
+  });
+
   test("oncapture:* syntax uses capture phase", () => {
     const source = `<div oncapture:click={handleCapture}>Content</div>`;
     const result = transformJSX(source, defaultOptions);
@@ -663,7 +796,8 @@ describe("dynamic children edge cases", () => {
     expect(result).toContain("<!>");
     // Should use insert for the expression
     expect(result).toContain("_$insert");
-    expect(result).toContain("count()");
+    // Zero-arg call expressions are treated as accessors (dom-expressions parity)
+    expect(result).toContain(", count,");
     // Should NOT have null dereference issues
     expect(result).not.toContain("null.parentNode");
   });
@@ -699,15 +833,16 @@ describe("dynamic children edge cases", () => {
     const result = transformJSX(source, defaultOptions);
 
     expect(result).toContain("<!>");
-    expect(result).toContain("inner()");
+    // Zero-arg call expressions are treated as accessors (dom-expressions parity)
+    expect(result).toContain(", inner,");
   });
 
   test("template contains placeholder marker for expressions", () => {
     const source = `const el = <section>{content()}</section>`;
     const result = transformJSX(source, defaultOptions);
  
-     // The template string should contain the placeholder and closing tag
-     expect(result).toMatch(/_\$template\(`<section><!><\/section>`\)/);
+     // The template string should contain the placeholder (closing tag omitted by default)
+     expect(result).toMatch(/_\$template\(`<section><!>`\)/);
    });
 
 
@@ -724,7 +859,7 @@ describe("dynamic children edge cases", () => {
     const result = transformJSX(source, defaultOptions);
  
      // Parent div template should only contain a placeholder for the dynamic button
-     expect(result).toContain("_$template(`<div><!></div>`)");
+     expect(result).toContain("_$template(`<div><!>`)");
    });
 
 });
@@ -740,7 +875,7 @@ describe("SSR mode", () => {
     const source = `const el = <div class={foo()}>{bar()}</div>;`;
     const result = transformJSX(source, ssrOptions);
 
-    expect(result).toContain("_$ssrElement(\"div\"");
+    expect(result).toContain("_$ssr");
     expect(result).toContain("foo()");
     expect(result).toContain("_$escape(bar())");
   });
@@ -750,8 +885,40 @@ describe("SSR mode", () => {
     const hydratableOptions = { ...ssrOptions, hydratable: true };
     const result = transformJSX(source, hydratableOptions);
 
-    expect(result).toContain("_$ssrElement");
     expect(result).toContain("_$ssrHydrationKey");
+  });
+
+  test("wraps top-level head with NoHydration when hydratable (dom-expressions parity)", () => {
+    const hydratableOptions = { ...ssrOptions, hydratable: true };
+    const source = `const el = <head><title>Hi</title></head>;`;
+    const result = transformJSX(source, hydratableOptions);
+
+    expect(result).toContain("_$NoHydration");
+    expect(result).toContain("_$createComponent");
+  });
+
+  test("SSR doNotEscape: script/style children are not escaped", () => {
+    const hydratableOptions = { ...ssrOptions, hydratable: true };
+    const source = `
+      const js = () => "</script><div>boom</div>";
+      const a = <script>{js()}</script>;
+      const b = <style>{css()}</style>;
+    `;
+    const result = transformJSX(source, hydratableOptions);
+
+    // Should not wrap script/style children in escape().
+    expect(result).not.toContain("_$escape(js()");
+    expect(result).not.toContain("_$escape(css()");
+  });
+
+  test("SSR doNotEscape: innerHTML does not escape content or emit innerhtml attribute", () => {
+    const hydratableOptions = { ...ssrOptions, hydratable: true };
+    const source = `const el = <div innerHTML={html()} />;`;
+    const result = transformJSX(source, hydratableOptions);
+
+    expect(result).not.toMatch(/innerhtml=/i);
+    expect(result).not.toContain("_$escape(html()");
+    expect(result).toContain("html()");
   });
 
   test("uses runtime preset for universal module", () => {
@@ -766,7 +933,7 @@ describe("SSR mode", () => {
     expect(result).toContain("solid-js/universal");
   });
 
-  test("universal mode uses ssrSpread for spread props", () => {
+  test("universal mode merges spread props for elements", () => {
     const universalOptions: ResolvedGasOptions = {
       ...ssrOptions,
       runtime: "universal",
@@ -775,9 +942,8 @@ describe("SSR mode", () => {
     const source = `const el = <div {...props} class="test">Content</div>;`;
     const result = transformJSX(source, universalOptions);
 
-    // Universal mode should use ssrSpread like SSR mode
     expect(result).toContain("solid-js/universal");
-    expect(result).toContain("_$ssrSpread");
+    expect(result).toContain("_$mergeProps");
   });
 
   test("universal runtime with custom moduleName works", () => {
@@ -790,7 +956,7 @@ describe("SSR mode", () => {
     const result = transformJSX(source, customUniversalOptions);
 
     expect(result).toContain("@opentui/solid");
-    expect(result).toContain("_$ssrElement");
+    expect(result).toContain("_$ssr");
   });
 
   test("universal runtime with custom moduleName generates correct imports", () => {
@@ -804,9 +970,9 @@ describe("SSR mode", () => {
 
     // Should import from custom module
     expect(result).toContain('from "@opentui/solid"');
-    // Should use SSR helpers
-    expect(result).toContain("_$ssrElement");
-    expect(result).toContain("_$ssrClassList");
+    // Should use SSR template helper output
+    expect(result).toContain("_$ssr");
+    expect(result).toContain("_$escape");
   });
 
   test("merges spreads with regular props", () => {
@@ -817,10 +983,7 @@ describe("SSR mode", () => {
     expect(result).toContain("{ \"foo\": bar }");
   });
 
-  test("SSR uses ssrElement helper - closing tag options don't apply at compile time", () => {
-    // SSR mode uses ssrElement helper which generates HTML at runtime
-    // The omitNestedClosingTags and omitLastClosingTag options don't apply
-    // because closing tags are handled by the runtime helper, not compile-time generation
+  test("SSR emits ssr() templates (dom-expressions parity)", () => {
     const ssrWithOptimization: ResolvedGasOptions = {
       ...ssrOptions,
       omitNestedClosingTags: true,
@@ -829,11 +992,9 @@ describe("SSR mode", () => {
     const source = `const el = <div><span>First</span><span>Second</span></div>;`;
     const result = transformJSX(source, ssrWithOptimization);
 
-    // SSR generates ssrElement calls, not raw HTML templates
-    // Closing tag optimization would only apply to raw HTML string generation
-    expect(result).toContain("_$ssrElement(\"div\"");
-    expect(result).toContain("_$ssrElement(\"span\"");
-    // The ssrElement helper handles closing tags at runtime
+    expect(result).toContain("_$ssr");
+    expect(result).toContain("var _tmpl$");
+    // DOM template helper should not appear in SSR output
     expect(result).not.toContain("_$template");
   });
 
@@ -843,51 +1004,58 @@ describe("SSR mode", () => {
   });
 
   test("golden ssr-basic snapshot exists", () => {
-    expect(ssrBasic).toContain("data-hk");
+    expect(ssrBasic).toContain("_$ssr");
     expect(ssrBasic).toContain("_$escape");
   });
 
-  test("golden ssr-spread snapshot uses ssrSpread for spread props", () => {
-    expect(ssrSpread).toContain("_$ssrSpread");
-    expect(ssrSpread).toContain("data-hk");
+  test("golden ssr-spread snapshot merges spreads for elements", () => {
+    expect(ssrSpread).toContain("_$mergeProps");
+    expect(ssrSpread).toContain("_$ssrElement");
   });
 
   test("golden ssr-attrs snapshot carries class/style and boolean attrs", () => {
-    expect(ssrAttrs).toContain("\"class\": \"base\"");
-    expect(ssrAttrs).toContain("\"class\": _$ssrClassList");
-    expect(ssrAttrs).toContain("\"style\": _$ssrStyle");
-    expect(ssrAttrs).toContain("\"data-id\": id");
-    expect(ssrAttrs).toContain("\"aria-hidden\": \"\"");
+    // SSR template output should merge base class + classList into a single class attribute,
+    // and emit dynamic style/attrs via SSR helpers.
+    expect(ssrAttrs).toContain('_$ssrAttribute("class"');
+    expect(ssrAttrs).toContain('"base "');
+    expect(ssrAttrs).toContain("_$ssrClassList");
+    expect(ssrAttrs).toContain("_$ssrStyleProperty");
+    expect(ssrAttrs).toContain('_$ssrAttribute("data-id"');
+    expect(ssrAttrs).toContain("aria-hidden");
   });
 
   test("golden ssr-events snapshot keeps event props", () => {
-    expect(ssrEvents).toContain("onClick");
-    expect(ssrEvents).toContain("onMouseDown");
-    expect(ssrEvents).toContain("on:scroll");
+    // SSR output should not serialize event handlers into HTML.
+    expect(ssrEvents).toContain("_$ssr");
+    expect(ssrEvents).not.toContain("onClick");
+    expect(ssrEvents).not.toContain("onMouseDown");
+    expect(ssrEvents).not.toContain("on:scroll");
   });
 
-  test("golden ssr-class-style snapshot uses helpers", () => {
-    expect(ssrClassStyle).toContain("_$ssrClassList");
-    expect(ssrClassStyle).toContain("_$ssrStyle");
-    expect(ssrClassStyle).toContain("_$ssrSpread");
+  test("golden ssr-class-style snapshot uses runtime class/style handling", () => {
+    expect(ssrClassStyle).toContain("\"classList\": { active: on, disabled: off }");
+    expect(ssrClassStyle).toContain("\"style\": { color: color(), \"font-weight\": bold ? \"700\" : \"400\" }");
+    expect(ssrClassStyle).toContain("_$mergeProps");
   });
 
   test("golden ssr-portal-fragment snapshot includes Portal/Show", () => {
     expect(ssrPortalFragment).toContain("Portal");
     expect(ssrPortalFragment).toContain("Show");
-    expect(ssrPortalFragment).toContain("_$ssrElement");
+    expect(ssrPortalFragment).toContain("_$ssr");
   });
 
   test("golden ssr-delegation keeps event props for delegation and direct", () => {
-    expect(ssrDelegation).toContain("onClick");
-    expect(ssrDelegation).toContain("onMouseEnter");
-    expect(ssrDelegation).toContain("on:scroll");
-    expect(ssrDelegation).toContain("onChange");
+    // SSR output should not serialize event handlers into HTML.
+    expect(ssrDelegation).toContain("_$ssr");
+    expect(ssrDelegation).not.toContain("onClick");
+    expect(ssrDelegation).not.toContain("onMouseEnter");
+    expect(ssrDelegation).not.toContain("on:scroll");
+    expect(ssrDelegation).not.toContain("onChange");
   });
 
-  test("golden ssr-nested-spread uses ssrSpread and helpers", () => {
-    expect(ssrNestedSpread).toContain("_$ssrSpread");
-    expect(ssrNestedSpread).toContain("_$ssrClassList");
+  test("golden ssr-nested-spread merges nested spreads", () => {
+    expect(ssrNestedSpread).toContain("_$mergeProps");
+    expect(ssrNestedSpread).toContain("\"classList\": { active }");
     expect(ssrNestedSpread).toContain("_$ssrElement");
   });
 });

@@ -2,7 +2,7 @@
 
 A native Bun plugin for compiling SolidJS projects **without Babel**.
 
-**Status:** DOM and SSR/universal output are implemented via Solid’s runtime helpers (`ssrElement`/`ssrClassList`/`ssrStyle`/`ssrAttribute` with hydration keys). AST-based parsing (TypeScript or its native preview) is used; as with any compiler, validate against your app.
+**Status:** DOM, SSR, and universal output are implemented via Solid’s runtime helpers (DOM templates + `insert`, SSR `ssr()` templates, `ssrHydrationKey`, `ssrClassList`/`ssrStyle`/`ssrAttribute`, etc). AST-based parsing (TypeScript or its native preview) is used; as with any compiler, validate against your app.
 
 This plugin transforms JSX in `.jsx` and `.tsx` files into optimized SolidJS DOM expressions using Bun's native capabilities.
 
@@ -11,9 +11,11 @@ This plugin transforms JSX in `.jsx` and `.tsx` files into optimized SolidJS DOM
 - **Zero Babel dependency** - Pure JavaScript/TypeScript implementation
 - **Fast compilation** - Leverages Bun's native transpiler
 - **SolidJS DOM support** - Templates, reactivity, events, components
-- **SSR mode (experimental)** - Uses Solid server helpers for attributes/class/style and hydration keys
+- **SSR + universal modes** - Uses Solid server helpers and `ssr()` templates (with optional hydration keys)
 - **Event delegation** - Automatic event delegation for common events
 - **Special attributes** - `classList`, `style`, `ref`, `use:*` directives
+- **Collision-safe output** - Avoids shadowing user identifiers in generated helpers/templates
+- **Optional inline source maps** - Improve debugging by mapping transformed output back to input
 
 ## Installation
 
@@ -23,12 +25,14 @@ bun add @nathanld/gas
 
 ## Usage
 
+Migrating from `babel-preset-solid`? See [`MIGRATION.md`](./MIGRATION.md).
+
 ### Hardening roadmap (toward production)
 
 - Add end-to-end SSR render-to-string + client hydrate checks across `generate: "dom" | "ssr"` and `runtime: "dom" | "ssr" | "universal"`.
 - Expand golden coverage: delegated vs non-delegated events, nested spreads with children, portals/fragments, classList/style object combos, hydration-key expectations.
 - Align fully with Solid server runtime helpers (including any needed `ssrSpread` semantics) and verify hydration marker parity.
-- Wire CI matrix for `bun test` and `bun build` in all presets and sample test-app builds (now under `test/apps/sample-app`).
+- Wire CI matrix for `bun test` and `bun build` in all presets.
 
 ### Runtime (Development)
 
@@ -55,7 +59,7 @@ Use the plugin with `Bun.build()`:
 
 ```typescript
 // build.ts
-import gasPlugin from "@nathanld/gas";
+import { gasPlugin } from "@nathanld/gas";
 
 await Bun.build({
   entrypoints: ["./src/index.tsx"],
@@ -87,7 +91,7 @@ import { gasPlugin } from "@nathanld/gas";
 
 await Bun.build({
   entrypoints: ["./src/server.tsx"],
-  outdir: "./dist";
+  outdir: "./dist",
   plugins: [
     gasPlugin({
       generate: "ssr",
@@ -101,26 +105,62 @@ await Bun.build({
 
 ```typescript
 interface GasPluginOptions {
-  // Output mode: "dom" only today ("ssr" reserved)
-  generate?: "dom" | "ssr";
+  // Output mode
+  // Note: for Babel compatibility, "universal" is accepted (treated as generate: "ssr" + runtime: "universal").
+  generate?: "dom" | "ssr" | "universal";
 
-  // Hydration flag for SSR (not yet implemented)
+  // Enable hydratable output (DOM hydration + SSR hydration keys)
   hydratable?: boolean;
 
-  // Module name for Solid runtime imports
+  // Module name for Solid runtime imports (defaults depend on `runtime`)
   moduleName?: string;
 
-  // Runtime preset: "dom" (solid-js/web), "ssr" (solid-js/ssr), "universal" (@solidjs/universal)
+  // Runtime preset:
+  // - "dom" (solid-js/web)
+  // - "ssr" (solid-js/web server build)
+  // - "universal" (solid-js/universal)
   runtime?: "dom" | "ssr" | "universal";
 
   // Built-in components that receive special compilation
   builtIns?: string[];
 
+  // Enable/disable delegated event output (defaults to true)
+  delegateEvents?: boolean;
+
+  // Additional delegated event names (extends the default set)
+  delegatedEvents?: string[];
+
   // Wrap conditionals in memos for fine-grained reactivity
   wrapConditionals?: boolean;
 
+  // DOM template closing-tag minimization (babel-preset-solid parity)
+  omitNestedClosingTags?: boolean;
+  omitLastClosingTag?: boolean;
+
+  // Optimize HTML by omitting quotes around safe attribute values
+  omitQuotes?: boolean;
+
+  // Restrict JSX transformation to files with a matching @jsxImportSource pragma (e.g. "solid-js")
+  requireImportSource?: string | false;
+
+  // Convert context to custom elements (set element._$owner = getOwner())
+  contextToCustomElements?: boolean;
+
+  // Static marker comment (default "@once")
+  staticMarker?: string;
+
+  // Wrapper function names (or false for wrapperless mode)
+  effectWrapper?: string | false;
+  memoWrapper?: string | false;
+
+  // Enable HTML structure validation for JSX output
+  validate?: boolean;
+
   // Enable development mode
   dev?: boolean;
+
+  // Generate inline source maps for transformed modules (Bun plugin only)
+  sourceMap?: boolean | "inline";
 
   // File filter regex pattern
   filter?: RegExp;
@@ -132,18 +172,35 @@ interface GasPluginOptions {
 ```typescript
 {
   generate: "dom",
-  hydratable: false, // only valid with generate: "ssr"
-  moduleName: "solid-js/web",
-  runtime: undefined,
+  hydratable: false, // enables DOM hydration when generate: "dom", and hydration keys when generate: "ssr"
+  runtime: undefined, // or "dom" | "ssr" | "universal"
+  moduleName: "solid-js/web", // overridden when runtime is set
   builtIns: [
     "For", "Show", "Switch", "Match", "Suspense",
     "SuspenseList", "Portal", "Index", "Dynamic", "ErrorBoundary"
   ],
+  delegateEvents: true,
+  delegatedEvents: [],
   wrapConditionals: true,
+  omitNestedClosingTags: false,
+  omitLastClosingTag: true,
+  omitQuotes: true,
+  requireImportSource: false, // or "solid-js" to require /** @jsxImportSource solid-js */
+  contextToCustomElements: false,
+  staticMarker: "@once",
+  effectWrapper: "effect",
+  memoWrapper: "memo",
+  validate: true,
   dev: false,
+  sourceMap: false,
   filter: /\.[tj]sx$/
 }
 ```
+
+### Debugging
+
+- **Inline source maps**: set `sourceMap: "inline"` (or `true`) when using the Bun plugin to emit an inline `sourceMappingURL` so stack traces and devtools can map back to the original file.
+- **Dev output**: set `dev: true` to include additional debug comments in generated code.
 
 ## Transformation Examples
 
@@ -283,6 +340,17 @@ const App = () =>
 - Built-in components (For, Show, Switch, etc.)
 - Member expression components (Foo.Bar)
 
+## Ecosystem Compatibility
+
+`gas` is designed to be compatible with the SolidJS ecosystem:
+
+- **SolidJS runtime**: Works with all SolidJS runtime APIs (`createSignal`, `createEffect`, `For`, `Show`, etc.)
+- **SolidJS libraries**: Compatible with SolidJS community libraries that use standard JSX patterns
+- **SolidStart**: Can be used with SolidStart when building with Bun (SolidStart's default Vite setup uses `babel-preset-solid`)
+- **Output parity**: Generates code compatible with `babel-preset-solid` output, so components work interchangeably
+
+**Note**: `gas` is a **Bun-specific plugin**. For Vite, Webpack, or other bundlers, continue using `babel-preset-solid` or `@solidjs/vite-plugin`.
+
 ## API Reference
 
 ### `gasPlugin(options?)`
@@ -316,6 +384,16 @@ Low-level API to transform JSX source code.
 import { transformJSX } from "@nathanld/gas";
 
 const result = transformJSX(sourceCode, resolvedOptions);
+```
+
+### `transformJSXWithMap(source, options, filename?)`
+
+Low-level API that returns both transformed code and a source map (useful for tooling and debugging).
+
+```typescript
+import { transformJSXWithMap } from "@nathanld/gas";
+
+const { code, map } = transformJSXWithMap(sourceCode, resolvedOptions, "input.tsx");
 ```
 
 ### `hasJSX(source)`
