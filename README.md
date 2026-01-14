@@ -32,7 +32,7 @@ Migrating from `babel-preset-solid`? See [`MIGRATION.md`](./MIGRATION.md).
 - Add end-to-end SSR render-to-string + client hydrate checks across `generate: "dom" | "ssr"` and `runtime: "dom" | "ssr" | "universal"`.
 - Expand golden coverage: delegated vs non-delegated events, nested spreads with children, portals/fragments, classList/style object combos, hydration-key expectations.
 - Align fully with Solid server runtime helpers (including any needed `ssrSpread` semantics) and verify hydration marker parity.
-- Wire CI matrix for `bun test` and `bun build` in all presets and sample test-app builds (now under `test/apps/sample-app`).
+- Wire CI matrix for `bun test` and `bun build` in all presets.
 
 ### Runtime (Development)
 

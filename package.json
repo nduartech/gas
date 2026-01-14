@@ -1,6 +1,6 @@
 {
   "name": "@nathanld/gas",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "description": "A native Bun plugin for compiling SolidJS projects without Babel",
   "type": "module",
   "main": "./dist/index.js",

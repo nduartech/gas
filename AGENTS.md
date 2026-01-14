@@ -3,7 +3,6 @@
 - Build the library with `bun run build` (includes `build:types`).
 - Run all tests with `bun test` from the project root.
 - Run a single test file with `bun test test/parser.test.ts` (adjust path as needed).
-- For the sample app: `cd test/apps/sample-app && bun install && bun run build`.
 - CI mirrors these steps: install, `bun test`, then `bun run build`.
 - No dedicated linter is configured; do not introduce new tooling without discussion.
 - Match existing formatting: 2-space indentation, semicolons, double-quoted strings.
