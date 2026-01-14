@@ -1,5 +1,13 @@
 # @nathanld/gas
 
+## 0.0.9
+
+### Patch Changes
+
+- c7dfc61: Fixes
+- Fixes
+- 99dbdfa: Fixes, improvements
+
 ## 0.0.7
 
 ### Patch Changes
